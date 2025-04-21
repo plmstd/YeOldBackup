@@ -205,6 +205,8 @@ struct ContentView: View {
                 backupManager.progressMessage = "Ready"
             }
             loadHistory() // <<< CALL IT HERE INSIDE onAppear
+            // <<< ADDED: Check for matching history on initial load
+            findAndSelectMatchingHistoryEntry()
         }
         // Re-check permissions when the app becomes active again
         .onReceive(NotificationCenter.default.publisher(for: NSApplication.didBecomeActiveNotification)) { _ in
