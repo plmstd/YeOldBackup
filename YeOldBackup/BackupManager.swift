@@ -26,6 +26,7 @@ class BackupManager: ObservableObject {
     @Published var errorOccurred: Bool = false
     @Published var lastErrorMessage: String = ""
     @Published var progressValue: Double = 0.0
+    @Published var currentFileName: String = ""
 
     private var process: Process?
     private var outputPipe: Pipe?
@@ -33,8 +34,8 @@ class BackupManager: ObservableObject {
     private var cancellables = Set<AnyCancellable>()
 
     // State for simulated progress
-    private var totalFilesToTransfer: Int = 0
-    private var filesProcessedCount: Int = 0
+    var totalFilesToTransfer: Int = 0
+    var filesProcessedCount: Int = 0
 
     func runBackup(source: String, target: String) {
         guard !isRunning else {
@@ -51,6 +52,7 @@ class BackupManager: ObservableObject {
             self.progressValue = 0.0
             self.filesProcessedCount = 0
             self.totalFilesToTransfer = 0
+            self.currentFileName = ""
         }
 
         // Perform the potentially long-running dry run and actual backup off the main thread
@@ -98,9 +100,10 @@ class BackupManager: ObservableObject {
 
             // --- Phase 2: Actual Backup ---
             DispatchQueue.main.async {
-                 self.progressMessage = "Starting sync (0 / \\(self.totalFilesToTransfer))..."
+                 self.progressMessage = "Syncing..."
                  self.filesProcessedCount = 0 // Ensure reset before run
                  self.progressValue = 0.0
+                 self.currentFileName = ""
             }
 
              // Setup the actual rsync process
@@ -136,11 +139,17 @@ class BackupManager: ObservableObject {
                 } else if let output = String(data: data, encoding: .utf8), !output.isEmpty {
                     let lines = output.split(whereSeparator: { $0.isNewline }) // Split strictly by newline for itemized output
                     var processedInChunk = 0
+                    var latestFileNameInChunk: String? = nil
+
                     for line in lines {
                         // Check if the line starts with ">f" indicating a file transfer
                         // See `man rsync` under --itemize-changes for codes
                         if line.hasPrefix(">f") {
                             processedInChunk += 1
+                            if line.count > 12 {
+                                let fileNamePart = String(line.dropFirst(12))
+                                latestFileNameInChunk = fileNamePart
+                            }
                         }
                         // Potentially count other changes like deletions "*deleting" if desired
                     }
@@ -154,7 +163,10 @@ class BackupManager: ObservableObject {
                         // Update progress on the main thread
                         DispatchQueue.main.async {
                              self.progressValue = max(0.0, min(1.0, newProgress)) // Clamp between 0 and 1
-                             self.progressMessage = "Syncing (\(displayCount) / \(self.totalFilesToTransfer))..."
+                             if let newName = latestFileNameInChunk {
+                                 self.currentFileName = newName
+                             }
+                             self.progressMessage = "Syncing..."
                              // print("Processed: \(self.filesProcessedCount), Total: \(self.totalFilesToTransfer), Progress: \(self.progressValue)")
                         }
                     }

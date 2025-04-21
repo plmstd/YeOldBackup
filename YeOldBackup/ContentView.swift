@@ -187,9 +187,16 @@ struct ContentView: View {
                     // Show the progress bar only when running
                     .opacity(backupManager.isRunning ? 1 : 0)
 
+                // <<< ADDED: Percentage Text
+                if backupManager.isRunning && backupManager.totalFilesToTransfer > 0 {
+                    Text(String(format: "%.0f%%", backupManager.progressValue * 100))
+                        .font(.caption)
+                        .padding(.leading, 5)
+                }
+
                 Spacer() // Push status text to the right
 
-                Text(statusText)
+                Text(detailedStatusText)
                     .font(.caption)
                     .lineLimit(1)
                     .truncationMode(.tail)
@@ -229,14 +236,19 @@ struct ContentView: View {
     }
 
     // Computed properties for status display
-    private var statusText: String {
+    private var detailedStatusText: String {
         if !hasFullDiskAccess {
             return "Requires Full Disk Access"
         }
+        if backupManager.isRunning && backupManager.totalFilesToTransfer > 0 {
+            let filePart = backupManager.currentFileName.isEmpty ? "file..." : backupManager.currentFileName
+            return "Syncing \(filePart) (\(backupManager.filesProcessedCount)/\(backupManager.totalFilesToTransfer))"
+        }
         if backupManager.progressMessage.isEmpty && !backupManager.isRunning {
             return "Ready"
+        } else {
+            return backupManager.progressMessage // Display Calculating, Complete, Failed, etc.
         }
-        return backupManager.progressMessage
     }
 
     private var statusColor: Color {
