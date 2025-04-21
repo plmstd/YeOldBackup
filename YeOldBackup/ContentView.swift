@@ -106,7 +106,7 @@ struct ContentView: View {
             // Header Row
             HStack {
                 Text("Source").font(.caption).frame(minWidth: 100, alignment: .leading)
-                Spacer().frame(width: 20)
+                Spacer().frame(width: 20) // Add space for the arrow column
                 Text("Target").font(.caption).frame(minWidth: 100, alignment: .leading)
                 Spacer()
                 Text("Last Synced").font(.caption).frame(minWidth: 120, alignment: .trailing)
@@ -120,19 +120,29 @@ struct ContentView: View {
                         .foregroundColor(.secondary)
                 } else {
                     ForEach(history) { entry in
-                        // Single Row Layout
+                        // Single Row Layout - Aligned like header
                         HStack {
                             Text(entry.sourceName)
+                                .frame(minWidth: 100, alignment: .leading) // Align with header
                                 .lineLimit(1).truncationMode(.middle)
                                 .help(entry.sourcePath) // Show full path on hover
+                            
                             Image(systemName: "arrow.right")
+                                .frame(width: 20) // Give arrow fixed width
+                                .foregroundColor(.secondary) // Match date color for subtlety
+                                //.padding(.horizontal, 2) // Optional tight padding
+                            
                             Text(entry.targetName)
+                                .frame(minWidth: 100, alignment: .leading) // Align with header
                                 .lineLimit(1).truncationMode(.middle)
                                 .help(entry.targetPath) // Show full path on hover
-                            Spacer()
+                            
+                            Spacer() // Pushes date to the right
+                            
                             Text(entry.lastSync, formatter: dateFormatter)
                                 .font(.caption)
                                 .foregroundColor(.secondary)
+                                .frame(minWidth: 120, alignment: .trailing) // Align with header
                         }
                         .contentShape(Rectangle()) // Make entire row tappable
                         .onTapGesture {
@@ -581,13 +591,17 @@ struct ContentView: View {
 
         if let index = updatedHistory.firstIndex(where: { $0.sourceBookmark == currentSourceBookmark && $0.targetBookmark == currentTargetBookmark }) {
             // Existing entry found, update it
-            var entryToUpdate = updatedHistory[index]
-            entryToUpdate.lastSync = now
-            entryToUpdate.sourcePath = currentSourcePath // Update paths in case they resolved differently
-            entryToUpdate.targetPath = currentTargetPath
-            updatedHistory[index] = entryToUpdate // Assign the modified struct back
-            print("Updated existing history entry at index \(index).")
-            print("New last sync date: \(entryToUpdate.lastSync)")
+            let oldEntry = updatedHistory.remove(at: index) // Remove the old entry
+            let updatedEntry = BackupHistoryEntry(id: oldEntry.id, // Keep the same ID
+                                                 sourceBookmark: currentSourceBookmark,
+                                                 targetBookmark: currentTargetBookmark,
+                                                 sourcePath: currentSourcePath,
+                                                 targetPath: currentTargetPath,
+                                                 lastSync: now) // Use the new timestamp
+            updatedHistory.append(updatedEntry) // Append the new version
+
+            print("Replaced existing history entry for ID \(oldEntry.id).")
+            print("New last sync date: \(updatedEntry.lastSync)")
             print("Now: \(now)")
             historyUpdated = true
         } else {
