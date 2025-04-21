@@ -2,22 +2,51 @@ import SwiftUI
 import AppKit // Required for NSOpenPanel
 import SystemConfiguration // For System Preferences URL
 
+// MARK: - Data Model for History
+
+struct BackupHistoryEntry: Codable, Identifiable, Equatable {
+    let id: UUID
+    var sourceBookmark: Data
+    var targetBookmark: Data
+    var sourcePath: String // Store for display, update if bookmark resolves differently
+    var targetPath: String // Store for display, update if bookmark resolves differently
+    var lastSync: Date
+
+    // Equatable conformance based on bookmarks - assumes bookmarks are the canonical identity
+    static func == (lhs: BackupHistoryEntry, rhs: BackupHistoryEntry) -> Bool {
+        return lhs.sourceBookmark == rhs.sourceBookmark && lhs.targetBookmark == rhs.targetBookmark
+    }
+}
+
 struct ContentView: View {
-    // Use AppStorage to store bookmark data
+    // Use AppStorage to store bookmark data for CURRENT selection
     @AppStorage("sourceBookmarkData") private var sourceBookmarkData: Data?
     @AppStorage("targetBookmarkData") private var targetBookmarkData: Data?
+    // Use AppStorage to store the encoded history data
+    @AppStorage("backupHistoryData") private var backupHistoryData: Data?
 
-    // State variables to hold the resolved paths for display and use
+    // State variables to hold the resolved paths for display and use (Current Selection)
     @State private var sourcePath: String = ""
     @State private var targetPath: String = ""
-    
-    // State variables to hold the URLs we are currently accessing
+
+    // State variables to hold the URLs we are currently accessing (Current Selection)
     @State private var accessedSourceURL: URL?
     @State private var accessedTargetURL: URL?
+
+    // State variable to hold the loaded backup history
+    @State private var history: [BackupHistoryEntry] = []
 
     // Instantiate the BackupManager
     @StateObject private var backupManager = BackupManager()
     @State private var hasFullDiskAccess: Bool = false
+
+    // Date Formatter for display
+    private let dateFormatter: DateFormatter = {
+        let formatter = DateFormatter()
+        formatter.dateStyle = .medium
+        formatter.timeStyle = .short
+        return formatter
+    }()
 
     var body: some View {
         VStack(alignment: .leading, spacing: 15) {
@@ -58,6 +87,42 @@ struct ContentView: View {
             }
              .disabled(!hasFullDiskAccess) // Disable row if no access
 
+            Divider()
+
+            // MARK: - Backup History List
+            Text("Backup History")
+                .font(.headline)
+            List {
+                if history.isEmpty {
+                    Text("No backup history yet.")
+                        .foregroundColor(.secondary)
+                } else {
+                    ForEach(history) { entry in
+                        HStack {
+                            VStack(alignment: .leading) {
+                                Text("Source: \(entry.sourcePath)")
+                                    .font(.caption)
+                                    .lineLimit(1).truncationMode(.middle)
+                                Text("Target: \(entry.targetPath)")
+                                    .font(.caption)
+                                    .lineLimit(1).truncationMode(.middle)
+                                Text("Last Synced: \(entry.lastSync, formatter: dateFormatter)")
+                                    .font(.caption2)
+                                    .foregroundColor(.secondary)
+                            }
+                            Spacer()
+                        }
+                        .contentShape(Rectangle()) // Make entire row tappable
+                        .onTapGesture {
+                            selectHistoryEntry(entry)
+                        }
+                    }
+                }
+            }
+            .frame(minHeight: 100) // Give the list some space
+            .border(Color.gray.opacity(0.3)) // Subtle border
+            .disabled(backupManager.isRunning || !hasFullDiskAccess)
+
             Spacer() // Pushes controls to top and bottom
 
             // Backup Controls and Status
@@ -89,18 +154,17 @@ struct ContentView: View {
                     .foregroundColor(statusColor)
             }
             .padding(.top)
-
         }
         .padding()
         .frame(minWidth: 550, minHeight: 300) // Adjusted size for warning
         .onAppear {
             checkPermissions()
-            // Attempt to resolve bookmarks on appear
             resolveBookmarks()
             // Initialize status message on appear if not already running
             if !backupManager.isRunning {
                 backupManager.progressMessage = "Ready"
             }
+            loadHistory() // <<< CALL IT HERE INSIDE onAppear
         }
         // Re-check permissions when the app becomes active again
         .onReceive(NotificationCenter.default.publisher(for: NSApplication.didBecomeActiveNotification)) { _ in
@@ -108,6 +172,13 @@ struct ContentView: View {
              // Re-resolve bookmarks in case permissions changed while inactive
              resolveBookmarks()
         }
+        // Watch for backup completion to update history
+        .onChange(of: backupManager.isRunning) { wasRunning, isRunning in
+             if wasRunning && !isRunning && !backupManager.errorOccurred {
+                 // Backup finished successfully
+                 updateHistoryAfterSuccess()
+             }
+         }
     }
 
     // Computed properties for status display
@@ -248,7 +319,7 @@ struct ContentView: View {
     }
 
     // Resolve a single bookmark
-    private func resolveBookmark(data: Data, type: PathType) -> URL? {
+    private func resolveBookmark(data: Data, type: PathType, updateState: Bool = true) -> URL? {
         var isStale = false
         do {
             let resolvedUrl = try URL(resolvingBookmarkData: data, options: .withSecurityScope, relativeTo: nil, bookmarkDataIsStale: &isStale)
@@ -265,10 +336,10 @@ struct ContentView: View {
                  // No need to stop/start access again here, we already started.
                  // Update stored data and path
                  DispatchQueue.main.async {
-                     if type == .source {
+                     if type == .source, updateState {
                          self.sourceBookmarkData = newBookmarkData
                          self.sourcePath = resolvedUrl.path
-                     } else {
+                     } else if type == .target, updateState {
                          self.targetBookmarkData = newBookmarkData
                          self.targetPath = resolvedUrl.path
                      }
@@ -284,9 +355,9 @@ struct ContentView: View {
                  }
                  // Update the path state variable
                   DispatchQueue.main.async {
-                      if type == .source {
+                      if type == .source, updateState {
                           self.sourcePath = resolvedUrl.path
-                      } else {
+                      } else if type == .target, updateState {
                           self.targetPath = resolvedUrl.path
                       }
                   }
@@ -299,11 +370,11 @@ struct ContentView: View {
             // Clear the invalid bookmark data and path
             DispatchQueue.main.async {
                 if type == .source {
-                    self.sourceBookmarkData = nil
+                    if updateState { self.sourceBookmarkData = nil }
                     self.sourcePath = ""
                     self.accessedSourceURL = nil // Clear the state URL too
                 } else {
-                    self.targetBookmarkData = nil
+                    if updateState { self.targetBookmarkData = nil }
                     self.targetPath = ""
                     self.accessedTargetURL = nil // Clear the state URL too
                 }
@@ -374,6 +445,131 @@ struct ContentView: View {
         //     backupStatus = "Backup Complete (Simulated)"
         // }
     }
+
+    // MARK: - History Load/Save
+
+    private func loadHistory() {
+        guard let data = backupHistoryData else {
+            print("No history data found in AppStorage.")
+            self.history = []
+            return
+        }
+        do {
+            self.history = try JSONDecoder().decode([BackupHistoryEntry].self, from: data)
+            print("Successfully loaded \(history.count) history entries.")
+            // Sort history by date, most recent first
+            self.history.sort { $0.lastSync > $1.lastSync }
+        } catch {
+            print("Error decoding backup history: \(error). Resetting history.")
+            self.history = []
+            self.backupHistoryData = nil // Clear corrupted data
+        }
+    }
+
+    private func saveHistory() {
+        do {
+            // Sort before saving
+             self.history.sort { $0.lastSync > $1.lastSync }
+            let data = try JSONEncoder().encode(history)
+            backupHistoryData = data
+            print("Successfully saved \(history.count) history entries.")
+        } catch {
+            print("Error encoding backup history: \(error)")
+            // Consider notifying the user
+        }
+    }
+    
+    // MARK: - History Interaction
+    
+    private func selectHistoryEntry(_ entry: BackupHistoryEntry) {
+        print("Attempting to select history entry: ID \(entry.id)")
+        guard hasFullDiskAccess else {
+            backupManager.progressMessage = "Requires Full Disk Access"
+            backupManager.errorOccurred = true
+            return
+        }
+        guard !backupManager.isRunning else { return } // Don't change while running
+        
+        // Attempt to resolve both source and target from the history entry's bookmarks
+        // This implicitly checks for accessibility/connectivity.
+        let resolvedSource = resolveBookmark(data: entry.sourceBookmark, type: .source, updateState: false) // Don't update main state yet
+        let resolvedTarget = resolveBookmark(data: entry.targetBookmark, type: .target, updateState: false) // Don't update main state yet
+        
+        if let sourceURL = resolvedSource, let targetURL = resolvedTarget {
+            print("Successfully resolved both source (\(sourceURL.path)) and target (\(targetURL.path)) for history entry.")
+            // Resolution successful, now update the main state
+            
+            // 1. Stop accessing previously selected URLs (if any)
+            stopAccessingAllURLs()
+            
+            // 2. Update AppStorage bookmarks
+            self.sourceBookmarkData = entry.sourceBookmark
+            self.targetBookmarkData = entry.targetBookmark
+            
+            // 3. Update path state variables
+            self.sourcePath = sourceURL.path
+            self.targetPath = targetURL.path
+            
+            // 4. Update accessed URL state variables (critical!)
+            self.accessedSourceURL = sourceURL
+            self.accessedTargetURL = targetURL
+            
+            // 5. Update status message
+            backupManager.progressMessage = "Loaded: \(shortPath(sourceURL.path)) -> \(shortPath(targetURL.path))"
+            backupManager.errorOccurred = false
+            
+            // Re-start access (resolveBookmark with updateState:false didn't start it)
+             _ = sourceURL.startAccessingSecurityScopedResource()
+             _ = targetURL.startAccessingSecurityScopedResource()
+             print("Restarted access for newly selected source and target.")
+
+        } else {
+            print("Failed to resolve source or target for history entry.")
+            // Resolution failed for one or both
+            backupManager.progressMessage = "Error: Cannot access source/target for selected history."
+            backupManager.errorOccurred = true
+            // Optionally, clear the main selection?
+             // clearSelection()
+        }
+    }
+    
+    private func updateHistoryAfterSuccess() {
+        print("Attempting to update history after successful backup.")
+        guard let currentSourceBookmark = sourceBookmarkData, let currentTargetBookmark = targetBookmarkData else {
+            print("History update skipped: Missing current source or target bookmark data.")
+            return
+        }
+        
+        let now = Date()
+        let currentSourcePath = self.sourcePath // Use the path currently in state
+        let currentTargetPath = self.targetPath // Use the path currently in state
+
+        // Find index of existing entry based on bookmark data
+        if let index = history.firstIndex(where: { $0.sourceBookmark == currentSourceBookmark && $0.targetBookmark == currentTargetBookmark }) {
+            // Existing entry found, update it
+            history[index].lastSync = now
+            history[index].sourcePath = currentSourcePath // Update paths in case they resolved differently
+            history[index].targetPath = currentTargetPath
+             print("Updated existing history entry at index \(index).")
+        } else {
+            // No existing entry, create a new one
+            let newEntry = BackupHistoryEntry(id: UUID(),
+                                              sourceBookmark: currentSourceBookmark,
+                                              targetBookmark: currentTargetBookmark,
+                                              sourcePath: currentSourcePath,
+                                              targetPath: currentTargetPath,
+                                              lastSync: now)
+            history.append(newEntry)
+            print("Added new history entry with ID \(newEntry.id).")
+        }
+        
+        saveHistory()
+    }
+    
+     // Helper to shorten paths for display
+     private func shortPath(_ path: String) -> String {
+         return (path as NSString).abbreviatingWithTildeInPath
+     }
 }
 
 // MARK: - Helper View for Warning
