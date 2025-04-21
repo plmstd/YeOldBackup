@@ -332,6 +332,30 @@ struct ContentView: View {
         // Monitor bookmark changes to auto-select history
         .onChange(of: sourceBookmarkData) { _, _ in findAndSelectMatchingHistoryEntry() }
         .onChange(of: targetBookmarkData) { _, _ in findAndSelectMatchingHistoryEntry() }
+        // <<< ADDED: Alert for deletion confirmation >>>
+        .alert("Confirm Sync Deletions", isPresented: $backupManager.requiresDeletionConfirmation) {
+            Button("Cancel", role: .cancel) {
+                backupManager.cancelBackupConfirmation()
+            }
+            Button("Proceed with Deletions", role: .destructive) {
+                // Ensure paths are still valid before proceeding after confirmation
+                guard !sourcePath.isEmpty, !targetPath.isEmpty else {
+                    print("Error: Source or Target path became invalid before confirming deletion.")
+                    // Optionally show another alert or update status
+                    backupManager.cancelBackupConfirmation() // Reset state
+                    return
+                }
+                backupManager.confirmAndProceedWithBackup(source: sourcePath, target: targetPath)
+            }
+        } message: {
+            if let stats = backupManager.deletionStats {
+                let percentage = stats.totalSource > 0 ? (Double(stats.count) / Double(stats.totalSource)) * 100 : 100.0
+                Text("Syncing will delete approximately \(stats.count) file(s) (around \(String(format: "%.0f", percentage))%) from the target '\((targetPath as NSString).lastPathComponent)' because they are not in the source '\((sourcePath as NSString).lastPathComponent)'.\n\nThis action cannot be undone. Are you sure you want to proceed?")
+            } else {
+                // Fallback message if stats aren't available for some reason
+                Text("This sync operation will delete a significant number of files from the target directory. Are you sure you want to proceed?")
+            }
+        }
     }
 
     // Computed properties for status display
