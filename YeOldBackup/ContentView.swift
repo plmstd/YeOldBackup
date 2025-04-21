@@ -165,43 +165,55 @@ struct ContentView: View {
 
             Spacer() // Pushes controls to top and bottom
 
-            // Backup Controls and Status
-            HStack {
-                if backupManager.isRunning {
-                    Button("Stop Sync") {
-                        backupManager.stopBackup()
+            // Backup Controls and Status (Now in a VStack)
+            VStack(alignment: .leading) { // <<< WRAPPED in VStack
+                HStack { // <<< Original HStack for button/progress/percentage
+                    if backupManager.isRunning {
+                        Button("Stop Sync") {
+                            backupManager.stopBackup()
+                        }
+                        .buttonStyle(.borderedProminent) // Make stop button prominent
+                        .tint(.red)
+                    } else {
+                        Button("Sync Now") {
+                            startBackup()
+                        }
+                        .disabled(sourcePath.isEmpty || targetPath.isEmpty || backupManager.isRunning || !hasFullDiskAccess)
+                        .keyboardShortcut(.defaultAction) // Allow hitting Enter to backup
                     }
-                    .buttonStyle(.borderedProminent) // Make stop button prominent
-                    .tint(.red)
-                } else {
-                    Button("Sync Now") {
-                        startBackup()
-                    }
-                    .disabled(sourcePath.isEmpty || targetPath.isEmpty || backupManager.isRunning || !hasFullDiskAccess)
-                    .keyboardShortcut(.defaultAction) // Allow hitting Enter to backup
-                }
 
-                // Determinate ProgressView bound to the BackupManager's progress
-                ProgressView(value: backupManager.progressValue)
-                    .padding(.leading, 5)
-                    // Show the progress bar only when running
-                    .opacity(backupManager.isRunning ? 1 : 0)
-
-                // <<< ADDED: Percentage Text
-                if backupManager.isRunning && backupManager.totalFilesToTransfer > 0 {
-                    Text(String(format: "%.0f%%", backupManager.progressValue * 100))
-                        .font(.caption)
+                    // Determinate ProgressView bound to the BackupManager's progress
+                    ProgressView(value: backupManager.progressValue)
                         .padding(.leading, 5)
+                        // Show the progress bar only when running
+                        .opacity(backupManager.isRunning ? 1 : 0)
+
+                    // <<< ADDED: Percentage Text
+                    if backupManager.isRunning && backupManager.totalFilesToTransfer > 0 {
+                        Text(String(format: "%.0f%%", backupManager.progressValue * 100))
+                            .font(.caption)
+                            .padding(.leading, 5)
+                    }
+                } // End HStack for button/progress/percentage
+
+                // <<< ADDED HStack for Status Text and Spinner
+                HStack(spacing: 5) {
+                    Text(detailedStatusText)
+                        .font(.caption)
+                        .lineLimit(1)
+                        .truncationMode(.tail)
+                        .foregroundColor(statusColor)
+
+                    // Show spinner only during active sync phase
+                    if backupManager.isRunning && backupManager.totalFilesToTransfer > 0 {
+                        ProgressView()
+                            .controlSize(.small) // Make spinner smaller
+                    }
+                    Spacer() // Push text/spinner left
                 }
+                .frame(maxWidth: .infinity) // Ensure HStack takes full width
 
-                Spacer() // Push status text to the right
-
-                Text(detailedStatusText)
-                    .font(.caption)
-                    .lineLimit(1)
-                    .truncationMode(.tail)
-                    .foregroundColor(statusColor)
-            }
+            } // End VStack for controls and status
             .padding(.top)
         }
         .padding()
