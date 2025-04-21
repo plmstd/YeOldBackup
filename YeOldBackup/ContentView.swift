@@ -219,6 +219,9 @@ struct ContentView: View {
                  updateHistoryAfterSuccess()
              }
          }
+        // <<< ADDED: Monitor bookmark changes to auto-select history
+        .onChange(of: sourceBookmarkData) { _, _ in findAndSelectMatchingHistoryEntry() }
+        .onChange(of: targetBookmarkData) { _, _ in findAndSelectMatchingHistoryEntry() }
     }
 
     // Computed properties for status display
@@ -569,6 +572,10 @@ struct ContentView: View {
              _ = targetURL.startAccessingSecurityScopedResource()
              print("Restarted access for newly selected source and target.")
 
+            // <<< ADDED: Check if this newly loaded pair matches history
+            // No need here, selection directly sets the ID.
+            // findAndSelectMatchingHistoryEntry()
+
         } else {
             print("Failed to resolve source or target for history entry.")
             // Resolution failed for one or both
@@ -653,6 +660,33 @@ struct ContentView: View {
         }
 
         saveHistory() // Save the updated history
+    }
+
+    // MARK: - Automatic History Selection
+    
+    private func findAndSelectMatchingHistoryEntry() {
+        guard let currentSourceBM = sourceBookmarkData, let currentTargetBM = targetBookmarkData else {
+            // If either source or target isn't set, clear history selection
+            // unless a history item was *just* explicitly clicked (handled by table's onChange)
+            // print("Clearing history selection due to missing source/target bookmarks.")
+            // self.selectedHistoryEntryID = nil // Avoid clearing if user just clicked history
+            return
+        }
+
+        print("Checking if current source/target matches history...")
+        if let matchingEntry = history.first(where: { $0.sourceBookmark == currentSourceBM && $0.targetBookmark == currentTargetBM }) {
+            // Avoid redundant updates if already selected
+            if self.selectedHistoryEntryID != matchingEntry.id {
+                print("Found matching history entry: \(matchingEntry.id). Selecting.")
+                self.selectedHistoryEntryID = matchingEntry.id
+            } else {
+                // print("Current selection already matches history entry \(matchingEntry.id).")
+            }
+        } else {
+            // Current pair doesn't match any history, clear selection
+            print("Current source/target pair does not match any history entry. Clearing selection.")
+            self.selectedHistoryEntryID = nil
+        }
     }
 
     // Helper to shorten paths for display
