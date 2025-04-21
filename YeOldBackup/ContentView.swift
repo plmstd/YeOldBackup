@@ -108,11 +108,6 @@ struct ContentView: View {
                 TableColumn("Source") { entry in
                     // Provide content to allow tooltips if needed
                     Text(entry.sourceName).help(entry.sourcePath)
-                        .contextMenu {
-                            Button("Delete", role: .destructive) {
-                                deleteHistoryEntry(entryToDelete: entry)
-                            }
-                        }
                 }
                 .width(min: 100, ideal: 150)
                 
@@ -153,6 +148,20 @@ struct ContentView: View {
                       print("Warning: Selected ID \(id) not found in history.")
                  }
              }
+            // Add context menu for the selected row(s)
+            .contextMenu(forSelectionType: BackupHistoryEntry.ID.self) { selectedIDs in
+                // Ensure there's a selection to act upon
+                if !selectedIDs.isEmpty {
+                    Button("Remove from List", role: .destructive) {
+                        for id in selectedIDs {
+                            if let entryToDelete = history.first(where: { $0.id == id }) {
+                                deleteHistoryEntry(entryToDelete: entryToDelete)
+                            }
+                        }
+                    }
+                }
+                // Add other potential actions here if needed
+            }
 
             Spacer() // Pushes controls to top and bottom
 
