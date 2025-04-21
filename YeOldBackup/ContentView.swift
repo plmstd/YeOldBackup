@@ -4,6 +4,13 @@ import SystemConfiguration // For System Preferences URL
 
 // MARK: - Data Model for History
 
+// Status enum for backup history entries
+enum BackupStatus: String, Codable {
+    case processing = "Processing"
+    case success = "Success" 
+    case error = "Error"
+}
+
 struct BackupHistoryEntry: Codable, Identifiable, Equatable {
     let id: UUID
     var sourceBookmark: Data
@@ -11,7 +18,9 @@ struct BackupHistoryEntry: Codable, Identifiable, Equatable {
     var sourcePath: String // Store for display, update if bookmark resolves differently
     var targetPath: String // Store for display, update if bookmark resolves differently
     var lastSync: Date
-
+    var status: BackupStatus // Current status of this backup pair
+    var lastSuccessDate: Date? // Optional date of last successful backup
+    
     // Helper to get the last path component for display
     var sourceName: String {
         return (sourcePath as NSString).lastPathComponent
@@ -122,12 +131,44 @@ struct ContentView: View {
                 }
                 .width(min: 100, ideal: 150)
                 
-                TableColumn("Last Synced") { entry in
-                    Text(entry.lastSync, formatter: dateFormatter)
-                        .font(.caption)
-                        .foregroundColor(.secondary)
+                TableColumn("Last Success") { entry in 
+                    if let successDate = entry.lastSuccessDate {
+                        Text(successDate, formatter: dateFormatter)
+                            .font(.caption)
+                            .foregroundColor(.secondary)
+                    } else {
+                        Text("Never")
+                            .font(.caption)
+                            .foregroundColor(.secondary)
+                    }
                 }
-                .width(min: 120, ideal: 150)
+                .width(min: 100, ideal: 120)
+                
+                TableColumn("Status") { entry in
+                    HStack {
+                        switch entry.status {
+                        case .processing:
+                            ProgressView()
+                                .controlSize(.small)
+                            Text("Processing")
+                                .font(.caption)
+                                .foregroundColor(.secondary)
+                        case .success:
+                            Image(systemName: "checkmark.circle.fill")
+                                .foregroundColor(.green)
+                            Text("Success")
+                                .font(.caption)
+                                .foregroundColor(.secondary)
+                        case .error:
+                            Image(systemName: "xmark.circle.fill")
+                                .foregroundColor(.red)
+                            Text("Error")
+                                .font(.caption)
+                                .foregroundColor(.secondary)
+                        }
+                    }
+                }
+                .width(min: 100, ideal: 120)
             }
             //.tableStyle(.inset) // Use default style for now, feels more native
             .frame(minHeight: 100, maxHeight: 200) // Keep size constraints
@@ -265,9 +306,18 @@ struct ContentView: View {
         }
         // Watch for backup completion to update history
         .onChange(of: backupManager.isRunning) { wasRunning, isRunning in
-             if wasRunning && !isRunning && !backupManager.errorOccurred {
-                 // Backup finished successfully
-                 updateHistoryAfterSuccess()
+             if wasRunning && !isRunning {
+                 // Backup finished (either successfully or with error)
+                 print(">>> onChange detected backup completion. Error occurred: \(backupManager.errorOccurred)") // DEBUG
+                 if !backupManager.errorOccurred {
+                     // Success case
+                     print(">>> Calling updateHistoryAfterSuccess()") // DEBUG
+                     updateHistoryAfterSuccess()
+                 } else {
+                     // Error case
+                     print(">>> Calling updateHistoryAfterFailure()") // DEBUG
+                     updateHistoryAfterFailure()
+                 }
              }
          }
         // <<< ADDED: Monitor bookmark changes to auto-select history
@@ -504,7 +554,7 @@ struct ContentView: View {
          stopAccessingURL(for: .target)
     }
 
-    // Placeholder for the backup logic
+    // Function to stop the backup if running
     private func startBackup() {
         guard hasFullDiskAccess else {
              backupManager.progressMessage = "Error: Full Disk Access required."
@@ -537,28 +587,248 @@ struct ContentView: View {
              return
         }
 
+        // Add or update history entry before starting the backup
+        addToHistoryBeforeBackup()
+        
         // Call the BackupManager to perform the backup
         backupManager.runBackup(source: sourcePath, target: targetPath)
+    }
 
-        // Removed simulation code
-        // print("Starting backup from \(sourcePath) to \(targetPath)")
-        // DispatchQueue.main.asyncAfter(deadline: .now() + 3) {
-        //     isBackupRunning = false
-        //     backupStatus = "Backup Complete (Simulated)"
-        // }
+    // MARK: - History Management Methods
+
+    // Add a new history entry when starting a backup
+    private func addToHistoryBeforeBackup() {
+        guard let currentSourceBookmark = sourceBookmarkData, let currentTargetBookmark = targetBookmarkData else {
+            print("Cannot add to history: Missing source or target bookmark data.")
+            return
+        }
+        
+        let currentSourcePath = self.sourcePath
+        let currentTargetPath = self.targetPath
+        let now = Date()
+        
+        // Work on a mutable copy
+        var updatedHistory = self.history
+        
+        // Check if an entry already exists for this source/target pair
+        if let index = updatedHistory.firstIndex(where: { $0.sourceBookmark == currentSourceBookmark && $0.targetBookmark == currentTargetBookmark }) {
+            // Entry exists, update it to "processing" status
+            let oldEntry = updatedHistory.remove(at: index)
+            let updatedEntry = BackupHistoryEntry(
+                id: oldEntry.id, // Keep the same ID
+                sourceBookmark: currentSourceBookmark,
+                targetBookmark: currentTargetBookmark,
+                sourcePath: currentSourcePath,
+                targetPath: currentTargetPath,
+                lastSync: now,
+                status: .processing, // Set to processing
+                lastSuccessDate: oldEntry.lastSuccessDate // Keep the last success date
+            )
+            updatedHistory.append(updatedEntry)
+            print("Updated existing history entry to 'processing' status: \(oldEntry.id)")
+        } else {
+            // No existing entry, create a new one
+            let newEntry = BackupHistoryEntry(
+                id: UUID(),
+                sourceBookmark: currentSourceBookmark,
+                targetBookmark: currentTargetBookmark,
+                sourcePath: currentSourcePath,
+                targetPath: currentTargetPath,
+                lastSync: now,
+                status: .processing, // Initial status is processing
+                lastSuccessDate: nil // No successful completion yet
+            )
+            updatedHistory.append(newEntry)
+            print("Added new history entry with 'processing' status: \(newEntry.id)")
+        }
+        
+        // Sort by lastSync and update the state
+        updatedHistory.sort { $0.lastSync > $1.lastSync }
+        self.history = updatedHistory
+        print(">>> addToHistoryBeforeBackup: About to call saveHistory() for entry ID: \(self.history.first { $0.sourceBookmark == currentSourceBookmark && $0.targetBookmark == currentTargetBookmark }?.id.uuidString ?? "NOT FOUND")") // DEBUG
+        saveHistory(updatedHistory) // <<< Pass modified array
+        
+        // Set this pair as the selected one in the table
+        self.selectedHistoryEntryID = history.first(where: { 
+            $0.sourceBookmark == currentSourceBookmark && $0.targetBookmark == currentTargetBookmark 
+        })?.id
+    }
+    
+    // Function to update history after a successful backup
+    private func updateHistoryAfterSuccess() {
+        print("Attempting to update history entry after successful backup.")
+        guard let currentSourceBookmark = sourceBookmarkData, let currentTargetBookmark = targetBookmarkData else {
+            print("History update skipped: Missing current source or target bookmark data.")
+            return
+        }
+        
+        let now = Date()
+        let currentSourcePath = self.sourcePath // Use the path currently in state
+        let currentTargetPath = self.targetPath // Use the path currently in state
+
+        // Find index of existing entry based on bookmark data
+        var historyUpdated = false
+        var updatedHistory = self.history // Work on a mutable copy
+
+        if let index = updatedHistory.firstIndex(where: { $0.sourceBookmark == currentSourceBookmark && $0.targetBookmark == currentTargetBookmark }) {
+            // Existing entry found, update it
+            updatedHistory[index].status = .success
+            updatedHistory[index].lastSuccessDate = now
+            updatedHistory[index].lastSync = now // Also update the general last sync time
+            updatedHistory[index].sourcePath = currentSourcePath // Update paths in case they changed
+            updatedHistory[index].targetPath = currentTargetPath
+
+            print("Updated history entry status to 'success' for ID \(updatedHistory[index].id).") // Use ID from updated entry
+            historyUpdated = true
+        } else {
+            // This shouldn't normally happen as we add entries when starting the backup,
+            // but just in case, create a new entry marked as success
+            let newEntry = BackupHistoryEntry(id: UUID(),
+                                              sourceBookmark: currentSourceBookmark,
+                                              targetBookmark: currentTargetBookmark,
+                                              sourcePath: currentSourcePath,
+                                              targetPath: currentTargetPath,
+                                              lastSync: now,
+                                              status: .success, // Successful completion
+                                              lastSuccessDate: now) // Set successful completion date
+            updatedHistory.append(newEntry)
+            print("Added new history entry with ID \(newEntry.id) marked as 'success'.")
+            historyUpdated = true
+        }
+
+        if historyUpdated {
+             // Sort the updated copy BEFORE assigning to state
+             updatedHistory.sort { $0.lastSync > $1.lastSync }
+
+             // <<< Force UI Refresh Hack: Temporarily empty the array
+             let finalUpdatedHistory = updatedHistory // Capture final state
+             self.history = [] // Empty it
+             DispatchQueue.main.async { // Schedule the update back immediately
+                 self.history = finalUpdatedHistory // Assign the sorted, updated array back
+                 print(">>> updateHistoryAfterSuccess: Re-assigned history. Count: \(self.history.count). First entry status: \(self.history.first?.status.rawValue ?? "N/A")") // DEBUG
+
+                 // Save the history *after* the state update
+                 print(">>> updateHistoryAfterSuccess: About to call saveHistory() for entry ID: \(self.history.first { $0.sourceBookmark == currentSourceBookmark && $0.targetBookmark == currentTargetBookmark }?.id.uuidString ?? "NOT FOUND")") // DEBUG
+                 self.saveHistory(finalUpdatedHistory)
+
+                 // Explicitly set selection ID *after* the update
+                 self.selectedHistoryEntryID = self.history.first(where: { $0.sourceBookmark == currentSourceBookmark && $0.targetBookmark == currentTargetBookmark })?.id
+             }
+         }
+    }
+    
+    // Function to update history when backup fails
+    private func updateHistoryAfterFailure() {
+        print("Attempting to update history entry after failed backup.")
+        guard let currentSourceBookmark = sourceBookmarkData, let currentTargetBookmark = targetBookmarkData else {
+            print("History update skipped: Missing current source or target bookmark data.")
+            return
+        }
+        
+        let now = Date()
+        let currentSourcePath = self.sourcePath
+        let currentTargetPath = self.targetPath
+        
+        var updatedHistory = self.history
+        var historyUpdated = false
+        
+        if let index = updatedHistory.firstIndex(where: { $0.sourceBookmark == currentSourceBookmark && $0.targetBookmark == currentTargetBookmark }) {
+            // Existing entry found, update it to error status
+            updatedHistory[index].status = .error
+            updatedHistory[index].lastSync = now // Update general sync time
+            // Keep existing lastSuccessDate
+            updatedHistory[index].sourcePath = currentSourcePath // Update paths
+            updatedHistory[index].targetPath = currentTargetPath
+
+            print("Updated history entry status to 'error' for ID \(updatedHistory[index].id).") // Use ID from updated entry
+            historyUpdated = true
+        } else {
+            // This shouldn't normally happen as we add entries when starting the backup
+            let newEntry = BackupHistoryEntry(
+                id: UUID(),
+                sourceBookmark: currentSourceBookmark,
+                targetBookmark: currentTargetBookmark,
+                sourcePath: currentSourcePath,
+                targetPath: currentTargetPath,
+                lastSync: now,
+                status: .error, // Failed
+                lastSuccessDate: nil // No successful completion
+            )
+            updatedHistory.append(newEntry)
+            print("Added new history entry with ID \(newEntry.id) marked as 'error'.")
+            historyUpdated = true
+        }
+        
+        if historyUpdated {
+            updatedHistory.sort { $0.lastSync > $1.lastSync }
+
+            // <<< Force UI Refresh Hack: Temporarily empty the array
+            let finalUpdatedHistory = updatedHistory // Capture final state
+            self.history = [] // Empty it
+            DispatchQueue.main.async { // Schedule the update back immediately
+                self.history = finalUpdatedHistory // Assign the sorted, updated array back
+                print(">>> updateHistoryAfterFailure: Re-assigned history. Count: \(self.history.count). First entry status: \(self.history.first?.status.rawValue ?? "N/A")") // DEBUG
+
+                // Save the history *after* the state update
+                print(">>> updateHistoryAfterFailure: About to call saveHistory() for entry ID: \(self.history.first { $0.sourceBookmark == currentSourceBookmark && $0.targetBookmark == currentTargetBookmark }?.id.uuidString ?? "NOT FOUND")") // DEBUG
+                self.saveHistory(finalUpdatedHistory)
+
+                // Explicitly set selection ID *after* the update
+                self.selectedHistoryEntryID = self.history.first(where: { 
+                    $0.sourceBookmark == currentSourceBookmark && $0.targetBookmark == currentTargetBookmark 
+                })?.id
+            }
+        }
     }
 
     // MARK: - History Load/Save
 
     private func loadHistory() {
         guard let data = backupHistoryData else {
-            print("No history data found in AppStorage.")
             self.history = []
             return
         }
         do {
-            self.history = try JSONDecoder().decode([BackupHistoryEntry].self, from: data)
-            print("Successfully loaded \(history.count) history entries.")
+            let decoder = JSONDecoder()
+            
+            // First attempt: Try to decode with new structure (includes status field)
+            do {
+                self.history = try decoder.decode([BackupHistoryEntry].self, from: data)
+                print("Successfully loaded \(history.count) history entries with status field.")
+            } catch {
+                // If decoding fails, the data might be in the old format (without status field)
+                print("Error decoding backup history with new structure: \(error). Trying old format.")
+                
+                // Define an old format struct for backward compatibility
+                struct OldBackupHistoryEntry: Codable {
+                    let id: UUID
+                    var sourceBookmark: Data
+                    var targetBookmark: Data
+                    var sourcePath: String
+                    var targetPath: String
+                    var lastSync: Date
+                }
+                
+                // Try decoding with the old format
+                let oldEntries = try decoder.decode([OldBackupHistoryEntry].self, from: data)
+                
+                // Convert old entries to new format
+                self.history = oldEntries.map { oldEntry in
+                    BackupHistoryEntry(
+                        id: oldEntry.id,
+                        sourceBookmark: oldEntry.sourceBookmark,
+                        targetBookmark: oldEntry.targetBookmark,
+                        sourcePath: oldEntry.sourcePath,
+                        targetPath: oldEntry.targetPath,
+                        lastSync: oldEntry.lastSync,
+                        status: .success, // Assume old entries were successful
+                        lastSuccessDate: oldEntry.lastSync // Use lastSync as lastSuccessDate
+                    )
+                }
+                
+                // Save in the new format
+                saveHistory(self.history)
+            }
             // Sort history by date, most recent first
             self.history.sort { $0.lastSync > $1.lastSync }
         } catch {
@@ -568,13 +838,22 @@ struct ContentView: View {
         }
     }
 
-    private func saveHistory() {
+    private func saveHistory(_ historyToSave: [BackupHistoryEntry]) {
+        print(">>> saveHistory() called. Saving \(historyToSave.count) entries.") // DEBUG
         do {
             // Sort before saving - <<< REMOVE SORTING HERE, it happens before assignment now
              // self.history.sort { $0.lastSync > $1.lastSync }
-            let data = try JSONEncoder().encode(history) // Encode the current state
+
+            // <<< MODIFIED LOGGING: Log the first entry's state directly before encoding
+            if let firstEntry = historyToSave.first {
+                 print(">>> saveHistory: First entry data - ID: \(firstEntry.id.uuidString), Status: \(firstEntry.status), LastSuccess: \(firstEntry.lastSuccessDate?.description ?? "nil")") // DEBUG
+             } else {
+                 print(">>> saveHistory: History is empty.") // DEBUG
+             }
+
+            let data = try JSONEncoder().encode(historyToSave) // <<< Use the argument
             backupHistoryData = data
-            print("Successfully saved \(history.count) history entries.")
+            print(">>> Successfully saved \(historyToSave.count) history entries.") // DEBUG
         } catch {
             print("Error encoding backup history: \(error)")
             // Consider notifying the user
@@ -643,59 +922,6 @@ struct ContentView: View {
         }
     }
     
-    private func updateHistoryAfterSuccess() {
-        print("Attempting to update history after successful backup.")
-        guard let currentSourceBookmark = sourceBookmarkData, let currentTargetBookmark = targetBookmarkData else {
-            print("History update skipped: Missing current source or target bookmark data.")
-            return
-        }
-        
-        let now = Date()
-        let currentSourcePath = self.sourcePath // Use the path currently in state
-        let currentTargetPath = self.targetPath // Use the path currently in state
-
-        // Find index of existing entry based on bookmark data
-        var historyUpdated = false
-        var updatedHistory = self.history // Work on a mutable copy
-
-        if let index = updatedHistory.firstIndex(where: { $0.sourceBookmark == currentSourceBookmark && $0.targetBookmark == currentTargetBookmark }) {
-            // Existing entry found, update it
-            let oldEntry = updatedHistory.remove(at: index) // Remove the old entry
-            let updatedEntry = BackupHistoryEntry(id: oldEntry.id, // Keep the same ID
-                                                 sourceBookmark: currentSourceBookmark,
-                                                 targetBookmark: currentTargetBookmark,
-                                                 sourcePath: currentSourcePath,
-                                                 targetPath: currentTargetPath,
-                                                 lastSync: now) // Use the new timestamp
-            updatedHistory.append(updatedEntry) // Append the new version
-
-            print("Replaced existing history entry for ID \(oldEntry.id).")
-            print("New last sync date: \(updatedEntry.lastSync)")
-            print("Now: \(now)")
-            historyUpdated = true
-        } else {
-            // No existing entry, create a new one
-            let newEntry = BackupHistoryEntry(id: UUID(),
-                                              sourceBookmark: currentSourceBookmark,
-                                              targetBookmark: currentTargetBookmark,
-                                              sourcePath: currentSourcePath,
-                                              targetPath: currentTargetPath,
-                                              lastSync: now)
-            updatedHistory.append(newEntry)
-            print("Added new history entry with ID \(newEntry.id).")
-            historyUpdated = true
-        }
-
-        if historyUpdated {
-             // Sort the updated copy BEFORE assigning to state
-             updatedHistory.sort { $0.lastSync > $1.lastSync }
-             self.history = updatedHistory // Assign the sorted, updated array back
-             saveHistory() // Save the now-sorted state
-             // Explicitly set selection ID to the one just run/added
-             self.selectedHistoryEntryID = history.first(where: { $0.sourceBookmark == currentSourceBookmark && $0.targetBookmark == currentTargetBookmark })?.id
-         }
-    }
-    
     // MARK: - History Deletion
 
     private func deleteHistoryEntry(entryToDelete: BackupHistoryEntry) {
@@ -715,7 +941,7 @@ struct ContentView: View {
             // print("Cleared main selection because deleted history item was active.")
         }
 
-        saveHistory() // Save the updated history
+        saveHistory(history) // Save the updated history
     }
 
     // MARK: - Automatic History Selection
