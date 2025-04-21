@@ -105,9 +105,14 @@ struct ContentView: View {
             
             // Implement using SwiftUI Table
             Table(history, selection: $selectedHistoryEntryID) {
-                TableColumn("Source") {
+                TableColumn("Source") { entry in
                     // Provide content to allow tooltips if needed
-                    Text($0.sourceName).help($0.sourcePath)
+                    Text(entry.sourceName).help(entry.sourcePath)
+                        .contextMenu {
+                            Button("Delete", role: .destructive) {
+                                deleteHistoryEntry(entryToDelete: entry)
+                            }
+                        }
                 }
                 .width(min: 100, ideal: 150)
                 
@@ -116,9 +121,9 @@ struct ContentView: View {
                 }
                 .width(25)
                 
-                TableColumn("Target") {
+                TableColumn("Target") { entry in
                      // Provide content to allow tooltips if needed
-                    Text($0.targetName).help($0.targetPath)
+                    Text(entry.targetName).help(entry.targetPath)
                 }
                 .width(min: 100, ideal: 150)
                 
@@ -619,10 +624,32 @@ struct ContentView: View {
          }
     }
     
-     // Helper to shorten paths for display
-     private func shortPath(_ path: String) -> String {
-         return (path as NSString).abbreviatingWithTildeInPath
-     }
+    // MARK: - History Deletion
+
+    private func deleteHistoryEntry(entryToDelete: BackupHistoryEntry) {
+        print("Attempting to delete history entry ID: \(entryToDelete.id)")
+        // Remove from the history state array
+        history.removeAll { $0.id == entryToDelete.id }
+
+        // If the deleted item was selected, clear the selection state
+        if selectedHistoryEntryID == entryToDelete.id {
+            selectedHistoryEntryID = nil
+            // Optionally clear the main source/target fields as well?
+            // sourcePath = ""
+            // targetPath = ""
+            // sourceBookmarkData = nil
+            // targetBookmarkData = nil
+            // stopAccessingAllURLs()
+            // print("Cleared main selection because deleted history item was active.")
+        }
+
+        saveHistory() // Save the updated history
+    }
+
+    // Helper to shorten paths for display
+    private func shortPath(_ path: String) -> String {
+        return (path as NSString).abbreviatingWithTildeInPath
+    }
 }
 
 // MARK: - Helper View for Warning
