@@ -1,6 +1,25 @@
 import Foundation
 import Combine
 
+// <<< ADDED: Custom Error Type
+enum BackupError: Error, LocalizedError {
+    case dryRunLaunchFailed(String)
+    case dryRunFailed(String)
+    case dryRunParseFailed
+    case actualRunLaunchFailed(String)
+    case processTerminationFailed(String)
+
+    var errorDescription: String? {
+        switch self {
+        case .dryRunLaunchFailed(let msg): return "Failed to launch dry run: \(msg)"
+        case .dryRunFailed(let msg): return "Dry run calculation failed: \(msg)"
+        case .dryRunParseFailed: return "Could not parse dry run statistics."
+        case .actualRunLaunchFailed(let msg): return "Failed to launch backup: \(msg)"
+        case .processTerminationFailed(let msg): return "Backup process did not respond to stop signals: \(msg)"
+        }
+    }
+}
+
 class BackupManager: ObservableObject {
     @Published var progressMessage: String = ""
     @Published var isRunning: Bool = false
@@ -13,191 +32,297 @@ class BackupManager: ObservableObject {
     private var errorPipe: Pipe?
     private var cancellables = Set<AnyCancellable>()
 
+    // State for simulated progress
+    private var totalFilesToTransfer: Int = 0
+    private var filesProcessedCount: Int = 0
+
     func runBackup(source: String, target: String) {
         guard !isRunning else {
             print("Backup already in progress.")
             return
         }
 
-        // Ensure source path ends with a slash for rsync correct behavior
-        let rsyncSource = source.hasSuffix("/") ? source : source + "/"
-        let rsyncTarget = target // Target should not end with slash usually
-
-        print("Starting rsync: /usr/bin/rsync -a --delete --progress \(rsyncSource) \(rsyncTarget)")
-
         // Reset state
         DispatchQueue.main.async {
             self.isRunning = true
-            self.progressMessage = "Starting backup..."
+            self.progressMessage = "Preparing backup..." // Initial message
             self.errorOccurred = false
             self.lastErrorMessage = ""
             self.progressValue = 0.0
+            self.filesProcessedCount = 0
+            self.totalFilesToTransfer = 0
         }
 
-        process = Process()
-        process?.executableURL = URL(fileURLWithPath: "/usr/bin/rsync")
-        // Key arguments:
-        // -a: Archive mode (recursive, preserves permissions, times, symlinks, etc.)
-        // --delete: Deletes files on the target that don't exist on the source
-        // --progress: Shows progress during transfer (we'll try to parse this)
-        // --exclude: Skip specific system/temporary files/folders
-        // NOTE: macOS default rsync (2.6.9) does NOT support --info=progress2.
-        process?.arguments = [
-            "-a",
-            "--delete",
-            "--progress",
-            "--exclude", ".Spotlight-V100/", // Spotlight index
-            "--exclude", ".fseventsd/",      // File system event logs
-            "--exclude", ".Trashes",         // User trash folders (can be tricky)
-            "--exclude", ".TemporaryItems/", // System temporary items
-            "--exclude", ".DS_Store",        // Finder metadata files
-            rsyncSource,
-            rsyncTarget
-        ]
+        // Perform the potentially long-running dry run and actual backup off the main thread
+        DispatchQueue.global(qos: .userInitiated).async { [weak self] in
+            guard let self = self else { return }
 
-        outputPipe = Pipe()
-        errorPipe = Pipe()
+            let rsyncSource = source.hasSuffix("/") ? source : source + "/"
+            let rsyncTarget = target
 
-        process?.standardOutput = outputPipe
-        process?.standardError = errorPipe
+            // --- Phase 1: Dry Run to Count Files ---
+            DispatchQueue.main.async {
+                self.progressMessage = "Calculating changes..."
+            }
 
-        // Capture stdout
-        outputPipe?.fileHandleForReading.readabilityHandler = { [weak self] fileHandle in
-            let data = fileHandle.availableData
-            if data.isEmpty {
-                // EOF
-                DispatchQueue.main.async {
-                    if !(self?.errorOccurred ?? true) && (self?.isRunning ?? false) {
-                        // self?.progressValue = 1.0 // Set to 100% - Let termination handler do this.
-                    }
-                }
-                self?.outputPipe?.fileHandleForReading.readabilityHandler = nil
-            } else if let output = String(data: data, encoding: .utf8), !output.isEmpty {
-                // Parse --progress output
-                // Example line: "      1,234,567  85%   95.50MB/s    0:00:10 (xfr#5, to-chk=15/50)"
-                // Or just filename on one line, progress on the next.
-                // We look for lines containing "%"
-                let lines = output.split(whereSeparator: { $0.isNewline || $0 == "\r" }) // Split by newline or carriage return
-                var lastParsedPercentage: Double? = nil
+            let dryRunResult = self.performDryRun(source: rsyncSource, target: rsyncTarget)
 
-                for line in lines {
-                    let lineStr = String(line).trimmingCharacters(in: .whitespaces)
-                    // Simple check for percentage sign
-                    if lineStr.contains("%") {
-                        // Extract the percentage value, typically after file size
-                        let components = lineStr.split(separator: " ", omittingEmptySubsequences: true)
-                        // Find the component that ends with %
-                        if let percentageComponent = components.first(where: { $0.contains("%") }) {
-                            let percentageString = String(percentageComponent).replacingOccurrences(of: "%", with: "")
-                            if let percentage = Double(percentageString) {
-                                // Store the last found percentage in this chunk
-                                lastParsedPercentage = max(0.0, min(1.0, percentage / 100.0))
-                            }
-                        }
-                    }
-                }
-
-                // Update the UI with the last percentage found in this data chunk
-                if let finalPercentage = lastParsedPercentage {
+            // Check dry run result
+            switch dryRunResult {
+            case .success(let count):
+                if count == 0 {
                     DispatchQueue.main.async {
-                        self?.progressValue = finalPercentage
-                        // Update status message to reflect the percentage being processed
-                        self?.progressMessage = "Syncing (\(Int(finalPercentage * 100))%)..."
-                        // print("Parsed (--progress) Progress: \(self?.progressValue ?? -1)") // Debug print
+                        self.progressMessage = "Already up to date."
+                        self.isRunning = false
+                        self.progressValue = 1.0 // Show 100% for up-to-date
                     }
-                } else {
-                    // If no percentage in this chunk, maybe it's just a filename?
-                    // Update the status message with the last non-empty line
-                    if let lastStatusLine = lines.last(where: { !$0.trimmingCharacters(in: .whitespaces).isEmpty }) {
+                    self.cleanupRunningProcess() // Clean up just in case
+                    return // Nothing to do
+                }
+                // Store count and proceed to actual backup
+                self.totalFilesToTransfer = count
+                DispatchQueue.main.async {
+                    self.progressMessage = "Found \\(count) changes..."
+                }
+
+            case .failure(let error):
+                DispatchQueue.main.async {
+                    self.errorOccurred = true
+                    self.lastErrorMessage = error.localizedDescription
+                    self.progressMessage = "Error during calculation"
+                    self.isRunning = false
+                }
+                self.cleanupRunningProcess()
+                return
+            }
+
+            // --- Phase 2: Actual Backup ---
+            DispatchQueue.main.async {
+                 self.progressMessage = "Starting sync (0 / \\(self.totalFilesToTransfer))..."
+                 self.filesProcessedCount = 0 // Ensure reset before run
+                 self.progressValue = 0.0
+            }
+
+             // Setup the actual rsync process
+             self.process = Process()
+             self.process?.executableURL = URL(fileURLWithPath: "/usr/bin/rsync")
+             // Use -i (--itemize-changes) instead of --progress
+             self.process?.arguments = [
+                 "-a",
+                 "--delete",
+                 "-i", // Itemize changes for parsing file counts
+                 // Add excludes back
+                 "--exclude", ".Spotlight-V100/",
+                 "--exclude", ".fseventsd/",
+                 "--exclude", ".Trashes",
+                 "--exclude", ".TemporaryItems/",
+                 "--exclude", ".DS_Store",
+                 rsyncSource,
+                 rsyncTarget
+             ]
+
+            self.outputPipe = Pipe()
+            self.errorPipe = Pipe()
+            self.process?.standardOutput = self.outputPipe
+            self.process?.standardError = self.errorPipe
+
+            // Capture stdout for itemized changes
+            self.outputPipe?.fileHandleForReading.readabilityHandler = { [weak self] fileHandle in
+                guard let self = self else { return }
+                let data = fileHandle.availableData
+                if data.isEmpty {
+                    // EOF
+                    self.outputPipe?.fileHandleForReading.readabilityHandler = nil
+                } else if let output = String(data: data, encoding: .utf8), !output.isEmpty {
+                    let lines = output.split(whereSeparator: { $0.isNewline }) // Split strictly by newline for itemized output
+                    var processedInChunk = 0
+                    for line in lines {
+                        // Check if the line starts with ">f" indicating a file transfer
+                        // See `man rsync` under --itemize-changes for codes
+                        if line.hasPrefix(">f") {
+                            processedInChunk += 1
+                        }
+                        // Potentially count other changes like deletions "*deleting" if desired
+                    }
+
+                    if processedInChunk > 0 {
+                        self.filesProcessedCount += processedInChunk
+                        // Ensure count doesn't exceed total (can happen with symlinks/dirs sometimes depending on exact rsync version/flags)
+                        let displayCount = min(self.filesProcessedCount, self.totalFilesToTransfer)
+                        // Prevent division by zero
+                        let newProgress = self.totalFilesToTransfer > 0 ? Double(displayCount) / Double(self.totalFilesToTransfer) : 0.0
+                        // Update progress on the main thread
                         DispatchQueue.main.async {
-                            if !(self?.progressMessage.contains("Syncing") ?? false) { // Avoid overwriting percentage status
-                                self?.progressMessage = "Processing: \(String(lastStatusLine).trimmingCharacters(in: .whitespaces))"
-                            }
+                             self.progressValue = max(0.0, min(1.0, newProgress)) // Clamp between 0 and 1
+                             self.progressMessage = "Syncing (\(displayCount) / \(self.totalFilesToTransfer))..."
+                             // print("Processed: \(self.filesProcessedCount), Total: \(self.totalFilesToTransfer), Progress: \(self.progressValue)")
                         }
                     }
                 }
             }
-        }
 
-        // Capture stderr
-        errorPipe?.fileHandleForReading.readabilityHandler = { [weak self] fileHandle in
-            let data = fileHandle.availableData
-            if data.isEmpty {
-                // EOF
-                self?.errorPipe?.fileHandleForReading.readabilityHandler = nil
-            } else if let errorOutput = String(data: data, encoding: .utf8), !errorOutput.isEmpty {
+            // Capture stderr (same as before)
+            self.errorPipe?.fileHandleForReading.readabilityHandler = { [weak self] fileHandle in
+                 guard let self = self else { return }
+                 let data = fileHandle.availableData
+                 if data.isEmpty {
+                     self.errorPipe?.fileHandleForReading.readabilityHandler = nil
+                 } else if let errorOutput = String(data: data, encoding: .utf8), !errorOutput.isEmpty {
+                     DispatchQueue.main.async {
+                         print("rsync stderr: \(errorOutput)")
+                         self.errorOccurred = true
+                         self.lastErrorMessage += errorOutput
+                         self.progressMessage = "Error: \(errorOutput.trimmingCharacters(in: .whitespacesAndNewlines))"
+                     }
+                 }
+            }
+
+            // Monitor termination (adjust completion message)
+            self.process?.terminationHandler = { [weak self] process in
+                 guard let self = self else { return }
+                 // Cleanup pipes *before* updating state on main thread
+                 self.cleanupRunningProcess()
+                 DispatchQueue.main.async {
+                     self.isRunning = false
+                     if process.terminationStatus == 0 && !self.errorOccurred {
+                         self.progressMessage = "Backup Complete."
+                         self.progressValue = 1.0 // Ensure 100% on success
+                         print("rsync finished successfully.")
+                     } else {
+                         self.errorOccurred = true
+                         if self.lastErrorMessage.isEmpty {
+                              self.lastErrorMessage = "rsync failed with exit code \(process.terminationStatus)."
+                         }
+                         self.progressMessage = "Backup Failed. Check logs."
+                         // Leave progress where it failed
+                         print("rsync failed. Status: \(process.terminationStatus), Error: \(self.lastErrorMessage)")
+                     }
+                 }
+            }
+
+            // Run the actual process
+            do {
+                try self.process?.run()
+            } catch {
+                print("Failed to run actual rsync process: \(error)")
                 DispatchQueue.main.async {
-                    print("rsync stderr: \(errorOutput)")
-                    self?.errorOccurred = true
-                    // Append to error message, handling potential multiple chunks
-                    self?.lastErrorMessage += errorOutput
-                    // Show the latest error chunk in the main progress message too
-                    self?.progressMessage = "Error: \(errorOutput.trimmingCharacters(in: .whitespacesAndNewlines))"
+                    self.isRunning = false
+                    self.errorOccurred = true
+                    self.lastErrorMessage = "Failed to launch rsync: \(error.localizedDescription)"
+                    self.progressMessage = "Error: Cannot start backup process."
                 }
-            }
-        }
-
-        // Monitor termination
-        process?.terminationHandler = { [weak self] process in
-            self?.cleanupPipes()
-            DispatchQueue.main.async {
-                self?.isRunning = false
-                if process.terminationStatus == 0 && !(self?.errorOccurred ?? false) {
-                    self?.progressMessage = "Backup Complete."
-                    self?.progressValue = 1.0
-                    print("rsync finished successfully.")
-                } else {
-                    self?.errorOccurred = true
-                    if self?.lastErrorMessage.isEmpty ?? true {
-                         self?.lastErrorMessage = "rsync failed with exit code \(process.terminationStatus)."
-                    }
-                    self?.progressMessage = "Backup Failed. Check logs." // Update final status
-                    print("rsync failed. Status: \(process.terminationStatus), Error: \(self?.lastErrorMessage ?? "Unknown")")
-                }
-                // Reset progress if stopped manually
-                DispatchQueue.main.async { [weak self] in
-                    guard let self = self else { return }
-                    if self.isRunning {
-                        self.progressMessage = "Backup Stopped."
-                        self.progressValue = 0.0
-                    }
-                }
-            }
-        }
-
-        // Run the process
-        do {
-            try process?.run()
-        } catch {
-            print("Failed to run rsync process: \(error)")
-            DispatchQueue.main.async {
-                self.isRunning = false
-                self.errorOccurred = true
-                self.lastErrorMessage = "Failed to launch rsync: \(error.localizedDescription)"
-                self.progressMessage = "Error: Cannot start backup process."
-                self.cleanupPipes()
+                self.cleanupRunningProcess()
             }
         }
     }
+
+    // Helper function to perform the dry run and parse the count
+    private func performDryRun(source: String, target: String) -> Result<Int, BackupError> {
+        let dryRunProcess = Process()
+        dryRunProcess.executableURL = URL(fileURLWithPath: "/usr/bin/rsync")
+        dryRunProcess.arguments = [
+            "-n", // Dry run
+            "-a", // Archive mode (needed for accurate comparison)
+            "--stats", // Get statistics including transfer counts
+            // Add excludes
+            "--exclude", ".Spotlight-V100/",
+            "--exclude", ".fseventsd/",
+            "--exclude", ".Trashes",
+            "--exclude", ".TemporaryItems/",
+            "--exclude", ".DS_Store",
+            source,
+            target
+        ]
+
+        let outputPipe = Pipe()
+        let errorPipe = Pipe()
+        dryRunProcess.standardOutput = outputPipe
+        dryRunProcess.standardError = errorPipe
+
+        do {
+            try dryRunProcess.run()
+            dryRunProcess.waitUntilExit() // Wait for the dry run to complete
+
+            let outputData = outputPipe.fileHandleForReading.readDataToEndOfFile()
+            let errorData = errorPipe.fileHandleForReading.readDataToEndOfFile()
+            let outputString = String(data: outputData, encoding: .utf8) ?? ""
+            let errorString = String(data: errorData, encoding: .utf8) ?? ""
+
+            if dryRunProcess.terminationStatus == 0 {
+                // Parse the output for "Number of files transferred:"
+                if let range = outputString.range(of: "Number of files transferred: ") {
+                    let numberString = outputString[range.upperBound...].prefix { $0.isNumber }
+                    if let count = Int(numberString) {
+                        print("Dry run complete. Files to transfer: \(count)")
+                        return .success(count)
+                    } else {
+                        print("Dry run stats found, but couldn't parse number: \(outputString)")
+                        // If stats are present but count is weird, assume 0 changes? Or treat as error?
+                        // Let's assume 0 if parsing fails after finding the line.
+                         return .success(0)
+                    }
+                } else if outputString.contains("Number of files:") {
+                     // If "Number of files transferred" is missing, but stats are present, means 0 files were transferred.
+                     print("Dry run complete. No files need transferring.")
+                     return .success(0)
+                 } else {
+                     print("Dry run stats format unexpected or missing 'transferred' line: \(outputString)")
+                     // If stats format is totally weird, treat as an error.
+                     return .failure(.dryRunParseFailed)
+                 }
+            } else {
+                print("Dry run failed. Status: \(dryRunProcess.terminationStatus), Error: \(errorString)")
+                let message = errorString.isEmpty ? "Unknown (Code: \(dryRunProcess.terminationStatus))" : errorString
+                return .failure(.dryRunFailed(message))
+            }
+        } catch {
+            print("Failed to run dry run process: \(error)")
+            return .failure(.dryRunLaunchFailed(error.localizedDescription))
+        }
+    }
+
 
     // Function to stop the backup if running
     func stopBackup() {
         guard isRunning, let process = process else { return }
         print("Attempting to stop rsync process...")
-        process.terminate() // Sends SIGTERM, rsync should handle this reasonably gracefully
-        // Give it a moment, then force quit if necessary (though usually not needed for rsync)
+
+        // Set a flag or message immediately on the main thread
+        DispatchQueue.main.async { [weak self] in
+             guard let self = self else { return }
+             if self.isRunning { // Check if it was actually running before termination logic potentially finishes
+                 self.progressMessage = "Stopping backup..."
+                 // Don't reset progress yet, let termination handler or cleanup handle it if needed
+             }
+        }
+
+        process.terminate() // Sends SIGTERM
+        // Give it a moment, then interrupt if necessary
         DispatchQueue.global().asyncAfter(deadline: .now() + 0.5) {
-                    if process.isRunning {
-                        print("rsync did not terminate, sending SIGINT/interrupt.")
-                        process.interrupt() // Sends SIGINT first (safer)
-                        // Consider sending SIGKILL if interrupt fails after another delay, though interrupt usually suffices.
-                        // process.forceTerminate() // Sends SIGKILL - Use with caution
-                    }
-                }
-        // Termination handler will eventually set isRunning = false
+            if process.isRunning {
+                print("rsync did not terminate, sending SIGINT/interrupt.")
+                process.interrupt() // Sends SIGINT
+            }
+            // The terminationHandler *should* be called eventually, setting isRunning=false
+            // We might need an explicit state reset here if termination handler doesn't fire reliably after SIGINT
+             DispatchQueue.main.asyncAfter(deadline: .now() + 1.0) { [weak self] in // Further delay
+                 guard let self = self else { return }
+                 if self.isRunning { // If *still* running after SIGINT attempt
+                      print("Backup still running after interrupt attempt, forcing state reset.")
+                      self.isRunning = false
+                      self.progressMessage = "Backup Stopped (Forced)."
+                      self.errorOccurred = true // Mark as error since it didn't stop cleanly
+                      let stopError = BackupError.processTerminationFailed("") // Create error instance
+                      self.lastErrorMessage = stopError.localizedDescription // Use its description
+                      self.progressValue = 0.0 // Reset progress
+                      self.cleanupRunningProcess() // Ensure pipes are closed
+                 }
+             }
+        }
     }
 
-    private func cleanupPipes() {
+    // Renamed from cleanupPipes to reflect it cleans the running process state
+    private func cleanupRunningProcess() {
         outputPipe?.fileHandleForReading.closeFile()
         errorPipe?.fileHandleForReading.closeFile()
         outputPipe?.fileHandleForReading.readabilityHandler = nil
@@ -205,12 +330,22 @@ class BackupManager: ObservableObject {
         outputPipe = nil
         errorPipe = nil
         process = nil // Release the process object
-        cancellables.removeAll()
+
+        // Reset progress counters here? No, let the start/stop logic handle resetting.
+        // totalFilesToTransfer = 0
+        // filesProcessedCount = 0
+
+        // Don't remove cancellables here unless they are specific to *one* run
+         cancellables.removeAll() // Assuming cancellables are only for the current run monitoring
     }
 
     deinit {
-        stopBackup() // Ensure process is terminated if BackupManager is deallocated
-        cleanupPipes()
+        // Ensure process is terminated if BackupManager is deallocated mid-run
+        if let process = process, process.isRunning {
+             print("BackupManager deinit: Terminating running process.")
+             process.terminate()
+         }
+        cleanupRunningProcess()
         print("BackupManager deinitialized")
     }
 } 
