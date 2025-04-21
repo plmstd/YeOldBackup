@@ -27,6 +27,8 @@ class BackupManager: ObservableObject {
     @Published var lastErrorMessage: String = ""
     @Published var progressValue: Double = 0.0
     @Published var currentFileName: String = ""
+    @Published var showReport: Bool = false
+    @Published var reportContent: String = ""
 
     private var process: Process?
     private var outputPipe: Pipe?
@@ -53,6 +55,8 @@ class BackupManager: ObservableObject {
             self.filesProcessedCount = 0
             self.totalFilesToTransfer = 0
             self.currentFileName = ""
+            self.showReport = false
+            self.reportContent = ""
         }
 
         // Perform the potentially long-running dry run and actual backup off the main thread
@@ -196,9 +200,11 @@ class BackupManager: ObservableObject {
                  self.cleanupRunningProcess()
                  DispatchQueue.main.async {
                      self.isRunning = false
+                     self.showReport = true
                      if process.terminationStatus == 0 && !self.errorOccurred {
                          self.progressMessage = "Backup Complete."
                          self.progressValue = 1.0 // Ensure 100% on success
+                         self.reportContent = "Finished sync successfully without any errors."
                          print("rsync finished successfully.")
                      } else {
                          self.errorOccurred = true
@@ -206,7 +212,7 @@ class BackupManager: ObservableObject {
                               self.lastErrorMessage = "rsync failed with exit code \(process.terminationStatus)."
                          }
                          self.progressMessage = "Backup Failed. Check logs."
-                         // Leave progress where it failed
+                         self.reportContent = "Backup finished with errors:\n\n\(self.lastErrorMessage)"
                          print("rsync failed. Status: \(process.terminationStatus), Error: \(self.lastErrorMessage)")
                      }
                  }
@@ -304,7 +310,8 @@ class BackupManager: ObservableObject {
              guard let self = self else { return }
              if self.isRunning { // Check if it was actually running before termination logic potentially finishes
                  self.progressMessage = "Stopping backup..."
-                 // Don't reset progress yet, let termination handler or cleanup handle it if needed
+                 self.showReport = false
+                 self.reportContent = ""
              }
         }
 
@@ -326,6 +333,8 @@ class BackupManager: ObservableObject {
                       self.errorOccurred = true // Mark as error since it didn't stop cleanly
                       let stopError = BackupError.processTerminationFailed("") // Create error instance
                       self.lastErrorMessage = stopError.localizedDescription // Use its description
+                      self.showReport = true
+                      self.reportContent = "Backup was stopped manually."
                       self.progressValue = 0.0 // Reset progress
                       self.cleanupRunningProcess() // Ensure pipes are closed
                  }

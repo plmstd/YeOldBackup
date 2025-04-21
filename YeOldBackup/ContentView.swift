@@ -217,6 +217,34 @@ struct ContentView: View {
             .padding(.top)
         }
         .padding()
+        // <<< ADDED: Backup Report Section
+        .safeAreaInset(edge: .bottom) { // Place below main content
+           if backupManager.showReport {
+               VStack(alignment: .leading, spacing: 5) {
+                   Divider()
+                   HStack {
+                       Text("Backup Report")
+                           .font(.headline)
+                       Spacer()
+                       Button("Dismiss") {
+                           backupManager.showReport = false
+                       }
+                   }
+
+                   ScrollView(.vertical) {
+                       Text(backupManager.reportContent)
+                           .font(.caption)
+                           .frame(maxWidth: .infinity, alignment: .leading)
+                           .multilineTextAlignment(.leading)
+                           .padding(.top, 2)
+                   }
+                   .frame(maxHeight: 100) // Limit height of the report area
+
+               }
+               .padding()
+               .background(.regularMaterial) // Give it a distinct background
+           }
+        }
         .frame(minWidth: 550, minHeight: 300) // Adjusted size for warning
         .onAppear {
             checkPermissions()
