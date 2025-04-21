@@ -677,14 +677,24 @@ struct ContentView: View {
         
         // Sort by lastSync and update the state
         updatedHistory.sort { $0.lastSync > $1.lastSync }
-        self.history = updatedHistory
-        print(">>> addToHistoryBeforeBackup: About to call saveHistory() for entry ID: \(self.history.first { $0.sourceBookmark == currentSourceBookmark && $0.targetBookmark == currentTargetBookmark }?.id.uuidString ?? "NOT FOUND")") // DEBUG
-        saveHistory(updatedHistory) // <<< Pass modified array
-        
-        // Set this pair as the selected one in the table
-        self.selectedHistoryEntryID = history.first(where: { 
-            $0.sourceBookmark == currentSourceBookmark && $0.targetBookmark == currentTargetBookmark 
-        })?.id
+
+        // <<< APPLY UI REFRESH HACK >>>
+        let finalUpdatedHistory = updatedHistory // Capture final state
+        self.history = [] // Empty it
+        DispatchQueue.main.async { // Schedule the update back immediately
+            self.history = finalUpdatedHistory // Assign the sorted, updated array back
+            print(">>> addToHistoryBeforeBackup: Re-assigned history. Count: \(self.history.count)") // DEBUG
+
+            // Save the history *after* the state update
+            print(">>> addToHistoryBeforeBackup: About to call saveHistory() for entry ID: \(self.history.first { $0.sourceBookmark == currentSourceBookmark && $0.targetBookmark == currentTargetBookmark }?.id.uuidString ?? "NOT FOUND")") // DEBUG
+            self.saveHistory(finalUpdatedHistory) // <<< Pass modified array
+            
+            // Set this pair as the selected one in the table *after* update
+            self.selectedHistoryEntryID = self.history.first(where: { 
+                $0.sourceBookmark == currentSourceBookmark && $0.targetBookmark == currentTargetBookmark 
+            })?.id
+        }
+        // <<< END UI REFRESH HACK >>>
     }
     
     // Function to update history after a successful backup
