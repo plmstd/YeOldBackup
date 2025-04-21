@@ -127,14 +127,11 @@ class BackupManager: ObservableObject {
              self.process?.executableURL = URL(fileURLWithPath: "/usr/bin/rsync")
              // Use -i (--itemize-changes) instead of --progress
              
-             // Log the actual rsync command we're about to run
-             print("DEBUG: Running actual backup with rsync: /usr/bin/rsync -a --delete -i -v [excludes] \(rsyncSource) \(rsyncTarget)")
-             
              self.process?.arguments = [
                  "-a",
                  "--delete",
                  "-i", // Itemize changes for parsing file counts
-                 "-v", // Verbose output to clearly show deletions
+                 "-v", // <<< RESTORED: Verbose output critical for deletion detection
                  // Add excludes back
                  "--exclude", ".Spotlight-V100/",
                  "--exclude", ".fseventsd/",
@@ -255,23 +252,13 @@ class BackupManager: ObservableObject {
     private func performDryRun(source: String, target: String) -> Result<DryRunInfo, BackupError> {
         let dryRunProcess = Process()
         dryRunProcess.executableURL = URL(fileURLWithPath: "/usr/bin/rsync")
-       
-        // <<< DEBUG: Log the exact rsync command being constructed
-        let rsyncCommand = ["-n", "-a", "--delete", "--stats",
-                            "--exclude", ".Spotlight-V100/",
-                            "--exclude", ".fseventsd/",
-                            "--exclude", ".Trashes",
-                            "--exclude", ".TemporaryItems/",
-                            "--exclude", ".DS_Store",
-                            source, target]
-        print("DEBUG: Dry run rsync command: /usr/bin/rsync \(rsyncCommand.joined(separator: " "))")
-       
+        
         dryRunProcess.arguments = [
             "-n", // Dry run
             "-a", // Archive mode (needed for accurate comparison)
             "--delete", // <<< ADDED: Essential to calculate deletions for stats
             "--stats", // Get statistics including transfer counts
-            "-v", // Verbose output to check what's being identified
+            "-v", // <<< RESTORED: Verbose output critical for deletion detection
             // Add excludes
             "--exclude", ".Spotlight-V100/",
             "--exclude", ".fseventsd/",
@@ -296,16 +283,6 @@ class BackupManager: ObservableObject {
             let outputString = String(data: outputData, encoding: .utf8) ?? ""
             let errorString = String(data: errorData, encoding: .utf8) ?? ""
 
-            print("DEBUG: ---------- DRY RUN OUTPUT START ----------")
-            print(outputString)
-            print("DEBUG: ---------- DRY RUN OUTPUT END ----------")
-            
-            if !errorString.isEmpty {
-                print("DEBUG: ---------- DRY RUN ERROR OUTPUT START ----------")
-                print(errorString)
-                print("DEBUG: ---------- DRY RUN ERROR OUTPUT END ----------")
-            }
-            
             if dryRunProcess.terminationStatus == 0 {
                 // Parse relevant stats
                 var transferCount = 0
@@ -315,33 +292,24 @@ class BackupManager: ObservableObject {
                 if let range = outputString.range(of: "Number of files transferred: ") {
                     let numberString = outputString[range.upperBound...].prefix { $0.isNumber }
                     transferCount = Int(numberString) ?? 0
-                    print("DEBUG: Parsed transfer count: \(transferCount)")
-                } else {
-                    print("DEBUG: Could not find 'Number of files transferred:' in output")
                 }
 
                 // Parse deletions
                 if let range = outputString.range(of: "Number of deletions: ") {
                     let numberString = outputString[range.upperBound...].prefix { $0.isNumber }
                     deletionCount = Int(numberString) ?? 0
-                    print("DEBUG: Parsed deletion count: \(deletionCount)")
                 } else {
-                    print("DEBUG: Could not find 'Number of deletions:' in output")
-                    
                     // Try alternative parsing for older rsync versions
                     if outputString.contains("deleting ") {
-                        print("DEBUG: Found 'deleting' entries in the verbose output - calculating manually")
                         let lines = outputString.split(separator: "\n")
                         let deletingLines = lines.filter { $0.contains("deleting ") }
                         deletionCount = deletingLines.count
-                        print("DEBUG: Manually counted \(deletionCount) deletion entries")
                     }
                 }
 
                 // Determine if a sync is needed
                 let needsSync = transferCount > 0 || deletionCount > 0
-
-                print("Dry run complete. Needs Sync: \(needsSync), Files to transfer: \(transferCount), Deletions: \(deletionCount)")
+                print("Dry run analysis: Needs Sync: \(needsSync), Files to transfer: \(transferCount), Deletions: \(deletionCount)")
 
                 // Check if *any* stats were found. If not, could be an issue.
                 if outputString.contains("Number of files:") { // Basic check that stats output exists
