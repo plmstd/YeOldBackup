@@ -110,7 +110,7 @@ struct ContentView: View {
             Divider()
 
             // MARK: - Backup History List
-            Text("Backup History")
+            Text("Backups")
                 .font(.headline)
             
             // Implement using SwiftUI Table
@@ -166,7 +166,7 @@ struct ContentView: View {
                 }
                 .width(min: 100, ideal: 120)
             }
-            //.tableStyle(.inset) // Use default style for now, feels more native
+            // .tableStyle(.inset) // Use default style for now, feels more native
             .frame(minHeight: 100, maxHeight: 200) // Keep size constraints
             .disabled(backupManager.isRunning || !hasFullDiskAccess)
             .onChange(of: selectedHistoryEntryID) { oldID, newID in
@@ -232,20 +232,24 @@ struct ContentView: View {
                             .padding(.leading, 5)
                     }
                 } // End HStack for button/progress/percentage
-
+                Spacer().frame(height: 15)
+                Divider()
+                Spacer().frame(height: 20)
                 // <<< ADDED HStack for Status Text and Spinner
                 HStack(spacing: 5) {
+                    // Show spinner only during active sync phase
+                    if backupManager.isRunning && backupManager.totalFilesToTransfer > 0 {
+                        ProgressView()
+                            .controlSize(.small) // Make spinner smaller
+                    }
+                    
                     Text(detailedStatusText)
                         .font(.caption)
                         .lineLimit(1)
                         .truncationMode(.tail)
                         .foregroundColor(statusColor)
 
-                    // Show spinner only during active sync phase
-                    if backupManager.isRunning && backupManager.totalFilesToTransfer > 0 {
-                        ProgressView()
-                            .controlSize(.small) // Make spinner smaller
-                    }
+                    
                     Spacer() // Push text/spinner left
                 }
                 .frame(maxWidth: .infinity) // Ensure HStack takes full width
