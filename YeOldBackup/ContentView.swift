@@ -134,11 +134,9 @@ struct ContentView: View {
                 TableColumn("Last Success") { entry in 
                     if let successDate = entry.lastSuccessDate {
                         Text(successDate, formatter: dateFormatter)
-                            .font(.caption)
                             .foregroundColor(.secondary)
                     } else {
                         Text("Never")
-                            .font(.caption)
                             .foregroundColor(.secondary)
                     }
                 }
@@ -151,19 +149,16 @@ struct ContentView: View {
                             ProgressView()
                                 .controlSize(.small)
                             Text("Processing")
-                                .font(.caption)
                                 .foregroundColor(.secondary)
                         case .success:
                             Image(systemName: "checkmark.circle.fill")
                                 .foregroundColor(.green)
                             Text("Success")
-                                .font(.caption)
                                 .foregroundColor(.secondary)
                         case .error:
                             Image(systemName: "xmark.circle.fill")
                                 .foregroundColor(.red)
                             Text("Error")
-                                .font(.caption)
                                 .foregroundColor(.secondary)
                         }
                     }
