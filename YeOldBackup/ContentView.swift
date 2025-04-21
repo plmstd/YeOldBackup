@@ -74,13 +74,15 @@ struct ContentView: View {
                     .font(.title)
                     .bold()
                     .frame(maxWidth: .infinity, alignment: .center)
-                    .padding(.bottom, 40)
+                    .padding(.bottom, 30)
 
                 // Full Disk Access Warning
                 if !hasFullDiskAccess {
                     FullDiskAccessWarningView()
                         .padding(.bottom)
                 }
+
+                Divider()
 
                 // Source Selection
                 HStack {
@@ -203,6 +205,43 @@ struct ContentView: View {
 
                 Spacer() // Pushes controls to top and bottom
 
+                // Report Section
+                if backupManager.showReport {
+                    VStack(alignment: .leading, spacing: 5) {
+                        HStack {
+                            Text("Sync Report")
+                                .font(.headline)
+                            Spacer()
+                            Button("Dismiss") {
+                                backupManager.showReport = false
+                            }
+                        }
+
+                        ViewThatFits {
+                            // Try to fit this view first (non-scrollable)
+                            Text(backupManager.reportContent)
+                                .font(.caption)
+                                .frame(maxWidth: .infinity, alignment: .leading)
+                                .multilineTextAlignment(.leading)
+                                .padding(.top, 2)
+
+                            // If it doesn't fit, fall back to scroll view
+                            ScrollView(.vertical) {
+                                Text(backupManager.reportContent)
+                                    .font(.caption)
+                                    .frame(maxWidth: .infinity, alignment: .leading)
+                                    .multilineTextAlignment(.leading)
+                                    .padding(.top, 2)
+                            }
+                            .frame(maxHeight: 200)
+                        }
+
+                    }
+                    .padding()
+                    .background(.regularMaterial)
+                    .clipShape(RoundedRectangle(cornerRadius: 5)) // Optional
+                }
+
                 // Backup Controls and Status (Now in a VStack)
                 HStack { // <<< Original HStack for button/progress/percentage
                     if backupManager.isRunning {
@@ -255,43 +294,6 @@ struct ContentView: View {
             .padding(.horizontal)
             .padding(.vertical, 10)
             .background(.regularMaterial)
-        }
-        // Backup Report Section
-        .safeAreaInset(edge: .bottom) {
-            if backupManager.showReport {
-                VStack(alignment: .leading, spacing: 5) {
-                    HStack {
-                        Text("Sync Report")
-                            .font(.headline)
-                        Spacer()
-                        Button("Dismiss") {
-                            backupManager.showReport = false
-                        }
-                    }
-
-                    ViewThatFits {
-                        // Try to fit this view first (non-scrollable)
-                        Text(backupManager.reportContent)
-                            .font(.caption)
-                            .frame(maxWidth: .infinity, alignment: .leading)
-                            .multilineTextAlignment(.leading)
-                            .padding(.top, 2)
-
-                        // If it doesn't fit, fall back to scroll view
-                        ScrollView(.vertical) {
-                            Text(backupManager.reportContent)
-                                .font(.caption)
-                                .frame(maxWidth: .infinity, alignment: .leading)
-                                .multilineTextAlignment(.leading)
-                                .padding(.top, 2)
-                        }
-                        .frame(maxHeight: 200)
-                    }
-
-                }
-                .padding()
-                .background(.regularMaterial)
-            }
         }
         .frame(minWidth: 550, idealWidth: 550, maxWidth: .infinity) // Allow flexible height
         .onAppear {
