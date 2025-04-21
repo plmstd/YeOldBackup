@@ -497,9 +497,9 @@ struct ContentView: View {
 
     private func saveHistory() {
         do {
-            // Sort before saving
-             self.history.sort { $0.lastSync > $1.lastSync }
-            let data = try JSONEncoder().encode(history)
+            // Sort before saving - <<< REMOVE SORTING HERE, it happens before assignment now
+             // self.history.sort { $0.lastSync > $1.lastSync }
+            let data = try JSONEncoder().encode(history) // Encode the current state
             backupHistoryData = data
             print("Successfully saved \(history.count) history entries.")
         } catch {
@@ -610,11 +610,13 @@ struct ContentView: View {
         }
 
         if historyUpdated {
-             self.history = updatedHistory // Assign the updated array back to the @State variable
-             saveHistory() // This also sorts the history before saving
+             // Sort the updated copy BEFORE assigning to state
+             updatedHistory.sort { $0.lastSync > $1.lastSync }
+             self.history = updatedHistory // Assign the sorted, updated array back
+             saveHistory() // Save the now-sorted state
              // Explicitly set selection ID to the one just run/added
              self.selectedHistoryEntryID = history.first(where: { $0.sourceBookmark == currentSourceBookmark && $0.targetBookmark == currentTargetBookmark })?.id
-        }
+         }
     }
     
      // Helper to shorten paths for display
