@@ -98,6 +98,13 @@ class BackupManager: ObservableObject {
 
             let dryRunResult = self.performDryRun(source: rsyncSource, target: rsyncTarget)
 
+            // <<< ADDED: Check if stopped during dry run >>>
+            guard self.isRunning else {
+                print("Backup was stopped during or immediately after dry run calculation.")
+                self.cleanupRunningProcess() // Ensure cleanup
+                return
+            }
+
             // Check dry run result
             switch dryRunResult {
             case .success(let info):
@@ -420,6 +427,8 @@ class BackupManager: ObservableObject {
         dryRunProcess.standardError = errorPipe
 
         do {
+            // <<< ADDED: Assign to instance property so stopBackup can find it >>>
+            self.process = dryRunProcess
             print("Starting dry run...") // DEBUG
             try dryRunProcess.run()
             dryRunProcess.waitUntilExit() // Wait for the dry run to complete
@@ -519,59 +528,59 @@ class BackupManager: ObservableObject {
 
     // Function to stop the backup if running
     func stopBackup() {
-        guard let currentProcess = process, isRunning else {
-            print("StopBackup called but no process running or not in running state.")
-            // Ensure state is consistent if called spuriously
-            if !isRunning {
-                 cleanupRunningProcess()
-                 // Optionally reset UI state if needed here
-            }
+        // <<< MODIFIED: Check process existence *after* attempting state change >>>
+        guard let currentProcess = process else {
+            print("StopBackup: Process was nil after requesting stop.")
+            // isRunning is already false, just ensure cleanup if needed
+            cleanupRunningProcess()
             return
         }
-        print("Attempting to stop rsync process...")
 
-        // Set a flag or message immediately on the main thread
-        DispatchQueue.main.async { [weak self] in
-             guard let self = self else { return }
-             // Only update message if we haven't already finished/failed
-             if self.isRunning {
-                 self.progressMessage = "Stopping backup..."
-                 self.showReport = false // Hide report during stop attempt
-                 self.reportContent = ""
-                 self.requiresDeletionConfirmation = false // Clear confirmation if stopping
-                 self.deletionStats = nil
-             }
-        }
+        print("Attempting to stop process (PID: \(currentProcess.processIdentifier))...")
 
         // Terminate the process
         currentProcess.terminate() // Sends SIGTERM
 
         // Schedule checks to ensure termination
         DispatchQueue.global().asyncAfter(deadline: .now() + 0.5) { [weak self] in
-             guard let self = self, currentProcess.isRunning else { return } // Check if still running
+             guard let self = self, currentProcess.isRunning else {
+                  // Process terminated successfully or self is nil
+                  if !currentProcess.isRunning {
+                      print("Process terminated gracefully after SIGTERM.")
+                      // Ensure cleanup happens if terminationHandler wasn't set/fired (e.g., dry run)
+                      self?.cleanupRunningProcess()
+                  }
+                  return
+              } // Check if still running
              print("rsync did not terminate with SIGTERM, sending SIGINT.")
              currentProcess.interrupt() // Sends SIGINT
 
              // Final check to force state reset if it's still stuck
-             DispatchQueue.main.asyncAfter(deadline: .now() + 1.0) { [weak self] in
-                 guard let self = self else { return }
-                 // Check isRunning state *on main thread* which terminationHandler should update
-                 if self.isRunning {
-                      print("Backup still marked as running after SIGINT attempt, forcing state reset.")
-                      self.isRunning = false
-                      self.progressMessage = "Backup Stopped (Forced)."
-                      self.errorOccurred = true
-                      let stopError = BackupError.processTerminationFailed("Process did not terminate.")
-                      self.lastErrorMessage = stopError.localizedDescription
-                      self.showReport = true
-                      self.reportContent = "Backup was stopped manually (force)."
-                      self.progressValue = 0.0
-                      self.cleanupRunningProcess() // Final cleanup
-                 }
-             }
-        }
-         // Note: The terminationHandler is the primary mechanism for setting isRunning = false.
-         // The forced reset above is a fallback.
+             // <<< MODIFIED: Run final check on global queue, update UI on main queue >>>
+             DispatchQueue.global().asyncAfter(deadline: .now() + 1.0) { [weak self] in
+                  guard let self = self else { return }
+                  // Check the actual process object's state
+                  if currentProcess.isRunning {
+                      print("Process (PID: \(currentProcess.processIdentifier)) still running after SIGINT. Forcing state cleanup.")
+                      // State is already set to not running, just ensure cleanup
+                      self.cleanupRunningProcess()
+                      DispatchQueue.main.async { // Update UI on main thread
+                          self.progressMessage = "Backup Stopped (Forced)."
+                          self.errorOccurred = true
+                          let stopError = BackupError.processTerminationFailed("Process did not terminate after stop request.")
+                          self.lastErrorMessage = stopError.localizedDescription
+                          self.showReport = true
+                          self.reportContent = "Backup was stopped manually (force)."
+                          // self.progressValue = 0.0 // Keep last value? Or reset? Resetting is fine.
+                           self.progressValue = 0.0
+                      }
+                  } else {
+                       print("Process terminated after SIGINT.")
+                       // Ensure cleanup happens
+                       self.cleanupRunningProcess()
+                  }
+              }
+         }
     }
 
     // Renamed from cleanupPipes to reflect it cleans the running process state
