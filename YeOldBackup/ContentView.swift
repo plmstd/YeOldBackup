@@ -168,13 +168,13 @@ struct ContentView: View {
             // Backup Controls and Status
             HStack {
                 if backupManager.isRunning {
-                    Button("Stop Backup") {
+                    Button("Stop Sync") {
                         backupManager.stopBackup()
                     }
                     .buttonStyle(.borderedProminent) // Make stop button prominent
                     .tint(.red)
                 } else {
-                    Button("Backup Now") {
+                    Button("Sync Now") {
                         startBackup()
                     }
                     .disabled(sourcePath.isEmpty || targetPath.isEmpty || backupManager.isRunning || !hasFullDiskAccess)
