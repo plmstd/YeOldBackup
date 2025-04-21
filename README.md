@@ -2,7 +2,7 @@
 
 ## ⚠️ Use At Your Own Risk! ⚠️
 
-**This application is provided "as is" without warranty of any kind, express or implied. It was developed rapidly based on general requirements ("vibe-coded") and may contain bugs or unexpected behavior. Data loss is possible if not used carefully. Always double-check your source and target selections before syncing, especially when deletions are involved. It is strongly recommended to have other backups of your important data.**
+**This application is provided "as is" without warranty of any kind, express or implied. It was developed *vibe coded* and may contain bugs or unexpected behavior. Data loss is possible if not used carefully. Always double-check your source and target selections before syncing, especially when deletions are involved. It is strongly recommended to have other backups of your important data.**
 
 ---
 
@@ -41,7 +41,7 @@ YeOldBackup acts as a wrapper around the system's `/usr/bin/rsync` command. Here
 
 ## Getting Started & Usage
 
-1.  **Download**: Obtain the `YeOldBackup.app` file.
+1.  **Download**: [Obtain the latest release of the `YeOldBackup.app` file.](https://github.com/plmstd/YeOldBackup/releases)
 2.  **Installation**: Drag `YeOldBackup.app` to your Applications folder.
 3.  **Full Disk Access**:
     - On the first launch (or if permissions are missing), the app will likely show a "Full Disk Access Required" warning.
@@ -58,6 +58,10 @@ YeOldBackup acts as a wrapper around the system's `/usr/bin/rsync` command. Here
 9.  **Completion/Report**: Once the sync finishes (or is stopped/cancelled/errors out), a report section will appear showing details from the `rsync` operation. You can dismiss this report.
 10. **Stopping**: If you need to stop a running sync, click the "Stop Sync" button. The app will send signals (`SIGTERM`, then `SIGINT` if needed) to the `rsync` process.
 11. **Using History**: Previous backup pairs appear in the "Backups" table. Clicking a row loads that source/target pair. You can right-click (or control-click) an entry to remove it from the list.
+
+**OR**
+
+Just clone the repo, open it in Xcode, and use it however you want.
 
 ## Important Considerations
 
