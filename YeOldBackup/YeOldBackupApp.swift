@@ -31,5 +31,6 @@ struct YeOldBackupApp: App {
         WindowGroup {
             ContentView()
         }
+        .windowStyle(.hiddenTitleBar)
     }
 } 

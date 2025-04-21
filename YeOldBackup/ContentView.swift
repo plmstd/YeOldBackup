@@ -70,9 +70,10 @@ struct ContentView: View {
     var body: some View {
         VStack(alignment: .leading, spacing: 15) {
             Text("YeOldBackup")
-                .font(.largeTitle)
+                .font(.title)
+                .bold()
                 .frame(maxWidth: .infinity, alignment: .center)
-                .padding(.bottom)
+                .padding(.bottom, 40)
 
             // Full Disk Access Warning
             if !hasFullDiskAccess {
@@ -83,7 +84,7 @@ struct ContentView: View {
             // Source Selection
             HStack {
                 Text("Source:")
-                    .frame(width: 60, alignment: .trailing)
+                    .frame(width: 60, alignment: .leading)
                 TextField("No source selected", text: $sourcePath)
                     .disabled(true)
                 Button("Select...") {
@@ -96,7 +97,7 @@ struct ContentView: View {
             // Target Selection
             HStack {
                 Text("Target:")
-                    .frame(width: 60, alignment: .trailing)
+                    .frame(width: 60, alignment: .leading)
                 TextField("No target selected", text: $targetPath)
                     .disabled(true)
                 Button("Select...") {
@@ -281,7 +282,7 @@ struct ContentView: View {
                .background(.regularMaterial) // Give it a distinct background
            }
         }
-        .frame(minWidth: 550, minHeight: 300) // Adjusted size for warning
+        .frame(minWidth: 550, idealWidth: 550, maxWidth: .infinity, idealHeight: 400, maxHeight: 700) // Allow flexible height
         .onAppear {
             checkPermissions()
             resolveBookmarks()
