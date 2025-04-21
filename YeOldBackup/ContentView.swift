@@ -68,142 +68,142 @@ struct ContentView: View {
     }()
 
     var body: some View {
-        VStack(alignment: .leading, spacing: 15) {
-            Text("YeOldBackup")
-                .font(.title)
-                .bold()
-                .frame(maxWidth: .infinity, alignment: .center)
-                .padding(.bottom, 40)
+        VStack() {
+            VStack(alignment: .leading, spacing: 15) {
+                Text("YeOldBackup")
+                    .font(.title)
+                    .bold()
+                    .frame(maxWidth: .infinity, alignment: .center)
+                    .padding(.bottom, 40)
 
-            // Full Disk Access Warning
-            if !hasFullDiskAccess {
-                FullDiskAccessWarningView()
-                    .padding(.bottom)
-            }
+                // Full Disk Access Warning
+                if !hasFullDiskAccess {
+                    FullDiskAccessWarningView()
+                        .padding(.bottom)
+                }
 
-            // Source Selection
-            HStack {
-                Text("Source:")
-                    .frame(width: 60, alignment: .leading)
-                TextField("No source selected", text: $sourcePath)
-                    .disabled(true)
-                Button("Select...") {
-                    selectDirectory(for: .source)
-                }
-                .disabled(backupManager.isRunning || !hasFullDiskAccess)
-            }
-            .disabled(!hasFullDiskAccess) // Disable row if no access
-
-            // Target Selection
-            HStack {
-                Text("Target:")
-                    .frame(width: 60, alignment: .leading)
-                TextField("No target selected", text: $targetPath)
-                    .disabled(true)
-                Button("Select...") {
-                    selectDirectory(for: .target)
-                }
-                 .disabled(backupManager.isRunning || !hasFullDiskAccess)
-            }
-             .disabled(!hasFullDiskAccess) // Disable row if no access
-
-            Divider()
-
-            // MARK: - Backup History List
-            Text("Backups")
-                .font(.headline)
-            
-            // Implement using SwiftUI Table
-            Table(history, selection: $selectedHistoryEntryID) {
-                TableColumn("Source") { entry in
-                    // Provide content to allow tooltips if needed
-                    Text(entry.sourceName).help(entry.sourcePath)
-                }
-                .width(min: 100, ideal: 150)
-                
-                TableColumn("To") { _ in
-                    Image(systemName: "arrow.right")
-                }
-                .width(25)
-                
-                TableColumn("Target") { entry in
-                     // Provide content to allow tooltips if needed
-                    Text(entry.targetName).help(entry.targetPath)
-                }
-                .width(min: 100, ideal: 150)
-                
-                TableColumn("Last Success") { entry in 
-                    if let successDate = entry.lastSuccessDate {
-                        Text(successDate, formatter: dateFormatter)
-                            .foregroundColor(.secondary)
-                    } else {
-                        Text("Never")
-                            .foregroundColor(.secondary)
+                // Source Selection
+                HStack {
+                    Text("Source:")
+                        .frame(width: 60, alignment: .leading)
+                    TextField("No source selected", text: $sourcePath)
+                        .disabled(true)
+                    Button("Select...") {
+                        selectDirectory(for: .source)
                     }
+                    .disabled(backupManager.isRunning || !hasFullDiskAccess)
                 }
-                .width(min: 100, ideal: 120)
+                .disabled(!hasFullDiskAccess) // Disable row if no access
+
+                // Target Selection
+                HStack {
+                    Text("Target:")
+                        .frame(width: 60, alignment: .leading)
+                    TextField("No target selected", text: $targetPath)
+                        .disabled(true)
+                    Button("Select...") {
+                        selectDirectory(for: .target)
+                    }
+                    .disabled(backupManager.isRunning || !hasFullDiskAccess)
+                }
+                .disabled(!hasFullDiskAccess) // Disable row if no access
+
+                Divider()
+
+                // MARK: - Backup History List
+                Text("Backups")
+                    .font(.headline)
                 
-                TableColumn("Status") { entry in
-                    HStack {
-                        switch entry.status {
-                        case .processing:
-                            ProgressView()
-                                .controlSize(.small)
-                            Text("Processing")
+                // Implement using SwiftUI Table
+                Table(history, selection: $selectedHistoryEntryID) {
+                    TableColumn("Source") { entry in
+                        // Provide content to allow tooltips if needed
+                        Text(entry.sourceName).help(entry.sourcePath)
+                    }
+                    .width(min: 100, ideal: 150)
+                    
+                    TableColumn("To") { _ in
+                        Image(systemName: "arrow.right")
+                    }
+                    .width(25)
+                    
+                    TableColumn("Target") { entry in
+                        // Provide content to allow tooltips if needed
+                        Text(entry.targetName).help(entry.targetPath)
+                    }
+                    .width(min: 100, ideal: 150)
+                    
+                    TableColumn("Last Success") { entry in 
+                        if let successDate = entry.lastSuccessDate {
+                            Text(successDate, formatter: dateFormatter)
                                 .foregroundColor(.secondary)
-                        case .success:
-                            Image(systemName: "checkmark.circle.fill")
-                                .foregroundColor(.green)
-                            Text("Success")
-                                .foregroundColor(.secondary)
-                        case .error:
-                            Image(systemName: "xmark.circle.fill")
-                                .foregroundColor(.red)
-                            Text("Error")
+                        } else {
+                            Text("Never")
                                 .foregroundColor(.secondary)
                         }
                     }
-                }
-                .width(min: 100, ideal: 120)
-            }
-            // .tableStyle(.inset) // Use default style for now, feels more native
-            .frame(minHeight: 100, maxHeight: 200) // Keep size constraints
-            .disabled(backupManager.isRunning || !hasFullDiskAccess)
-            .onChange(of: selectedHistoryEntryID) { oldID, newID in
-                 // Handle selection change - load the selected entry
-                 guard let id = newID, id != oldID else { // Ensure there's a change and a new selection
-                      // Handle deselection if needed, e.g., clear main paths?
-                      // For now, just prevent processing if no new valid ID.
-                      // print("Selection cleared or unchanged.")
-                      return
-                 }
-                 
-                 if let selectedEntry = history.first(where: { $0.id == id }) {
-                     print("Table selection changed to: \(selectedEntry.id)")
-                     selectHistoryEntry(selectedEntry) // Call existing function to load it
-                 } else {
-                      print("Warning: Selected ID \(id) not found in history.")
-                 }
-             }
-            // Add context menu for the selected row(s)
-            .contextMenu(forSelectionType: BackupHistoryEntry.ID.self) { selectedIDs in
-                // Ensure there's a selection to act upon
-                if !selectedIDs.isEmpty {
-                    Button("Remove from List", role: .destructive) {
-                        for id in selectedIDs {
-                            if let entryToDelete = history.first(where: { $0.id == id }) {
-                                deleteHistoryEntry(entryToDelete: entryToDelete)
+                    .width(min: 100, ideal: 120)
+                    
+                    TableColumn("Status") { entry in
+                        HStack {
+                            switch entry.status {
+                            case .processing:
+                                ProgressView()
+                                    .controlSize(.small)
+                                Text("Processing")
+                                    .foregroundColor(.secondary)
+                            case .success:
+                                Image(systemName: "checkmark.circle.fill")
+                                    .foregroundColor(.green)
+                                Text("Success")
+                                    .foregroundColor(.secondary)
+                            case .error:
+                                Image(systemName: "xmark.circle.fill")
+                                    .foregroundColor(.red)
+                                Text("Error")
+                                    .foregroundColor(.secondary)
                             }
                         }
                     }
+                    .width(min: 100, ideal: 120)
                 }
-                // Add other potential actions here if needed
-            }
+                // .tableStyle(.inset) // Use default style for now, feels more native
+                .frame(minHeight: 100, maxHeight: 200) // Keep size constraints
+                .disabled(backupManager.isRunning || !hasFullDiskAccess)
+                .onChange(of: selectedHistoryEntryID) { oldID, newID in
+                    // Handle selection change - load the selected entry
+                    guard let id = newID, id != oldID else { // Ensure there's a change and a new selection
+                        // Handle deselection if needed, e.g., clear main paths?
+                        // For now, just prevent processing if no new valid ID.
+                        // print("Selection cleared or unchanged.")
+                        return
+                    }
+                    
+                    if let selectedEntry = history.first(where: { $0.id == id }) {
+                        print("Table selection changed to: \(selectedEntry.id)")
+                        selectHistoryEntry(selectedEntry) // Call existing function to load it
+                    } else {
+                        print("Warning: Selected ID \(id) not found in history.")
+                    }
+                }
+                // Add context menu for the selected row(s)
+                .contextMenu(forSelectionType: BackupHistoryEntry.ID.self) { selectedIDs in
+                    // Ensure there's a selection to act upon
+                    if !selectedIDs.isEmpty {
+                        Button("Remove from List", role: .destructive) {
+                            for id in selectedIDs {
+                                if let entryToDelete = history.first(where: { $0.id == id }) {
+                                    deleteHistoryEntry(entryToDelete: entryToDelete)
+                                }
+                            }
+                        }
+                    }
+                    // Add other potential actions here if needed
+                }
 
-            Spacer() // Pushes controls to top and bottom
+                Spacer() // Pushes controls to top and bottom
 
-            // Backup Controls and Status (Now in a VStack)
-            VStack(alignment: .leading) { // <<< WRAPPED in VStack
+                // Backup Controls and Status (Now in a VStack)
                 HStack { // <<< Original HStack for button/progress/percentage
                     if backupManager.isRunning {
                         Button("Stop Sync") {
@@ -231,62 +231,69 @@ struct ContentView: View {
                             .font(.caption)
                             .padding(.leading, 5)
                     }
-                } // End HStack for button/progress/percentage
-                Spacer().frame(height: 15)
-                Divider()
-                Spacer().frame(height: 20)
-                // <<< ADDED HStack for Status Text and Spinner
-                HStack(spacing: 5) {
-                    // Show spinner only during active sync phase
-                    if backupManager.isRunning && backupManager.totalFilesToTransfer > 0 {
-                        ProgressView()
-                            .controlSize(.small) // Make spinner smaller
-                    }
-                    
-                    Text(detailedStatusText)
-                        .font(.caption)
-                        .lineLimit(1)
-                        .truncationMode(.tail)
-                        .foregroundColor(statusColor)
-
-                    
-                    Spacer() // Push text/spinner left
                 }
-                .frame(maxWidth: .infinity) // Ensure HStack takes full width
+            }
+            .padding()
 
-            } // End VStack for controls and status
-            .padding(.top)
+            // HStack for Status Text and Spinner
+            HStack(spacing: 5) {
+                // Show spinner only during active sync phase
+                if backupManager.isRunning && backupManager.totalFilesToTransfer > 0 {
+                    ProgressView()
+                        .controlSize(.small) // Make spinner smaller
+                }
+                
+                Text(detailedStatusText)
+                    .font(.caption)
+                    .lineLimit(1)
+                    .truncationMode(.tail)
+
+                
+                Spacer() // Push text/spinner left
+            }
+            .frame(maxWidth: .infinity) // Ensure HStack takes full width
+            .padding(.horizontal)
+            .padding(.vertical, 10)
+            .background(.regularMaterial)
         }
-        .padding()
-        // <<< ADDED: Backup Report Section
-        .safeAreaInset(edge: .bottom) { // Place below main content
-           if backupManager.showReport {
-               VStack(alignment: .leading, spacing: 5) {
-                   Divider()
-                   HStack {
-                       Text("Backup Report")
-                           .font(.headline)
-                       Spacer()
-                       Button("Dismiss") {
-                           backupManager.showReport = false
-                       }
-                   }
+        // Backup Report Section
+        .safeAreaInset(edge: .bottom) {
+            if backupManager.showReport {
+                VStack(alignment: .leading, spacing: 5) {
+                    HStack {
+                        Text("Sync Report")
+                            .font(.headline)
+                        Spacer()
+                        Button("Dismiss") {
+                            backupManager.showReport = false
+                        }
+                    }
 
-                   ScrollView(.vertical) {
-                       Text(backupManager.reportContent)
-                           .font(.caption)
-                           .frame(maxWidth: .infinity, alignment: .leading)
-                           .multilineTextAlignment(.leading)
-                           .padding(.top, 2)
-                   }
-                   .frame(maxHeight: 100) // Limit height of the report area
+                    ViewThatFits {
+                        // Try to fit this view first (non-scrollable)
+                        Text(backupManager.reportContent)
+                            .font(.caption)
+                            .frame(maxWidth: .infinity, alignment: .leading)
+                            .multilineTextAlignment(.leading)
+                            .padding(.top, 2)
 
-               }
-               .padding()
-               .background(.regularMaterial) // Give it a distinct background
-           }
+                        // If it doesn't fit, fall back to scroll view
+                        ScrollView(.vertical) {
+                            Text(backupManager.reportContent)
+                                .font(.caption)
+                                .frame(maxWidth: .infinity, alignment: .leading)
+                                .multilineTextAlignment(.leading)
+                                .padding(.top, 2)
+                        }
+                        .frame(maxHeight: 200)
+                    }
+
+                }
+                .padding()
+                .background(.regularMaterial)
+            }
         }
-        .frame(minWidth: 550, idealWidth: 550, maxWidth: .infinity, idealHeight: 400, maxHeight: 700) // Allow flexible height
+        .frame(minWidth: 550, idealWidth: 550, maxWidth: .infinity) // Allow flexible height
         .onAppear {
             checkPermissions()
             resolveBookmarks()
@@ -294,8 +301,8 @@ struct ContentView: View {
             if !backupManager.isRunning {
                 backupManager.progressMessage = "Ready"
             }
-            loadHistory() // <<< CALL IT HERE INSIDE onAppear
-            // <<< ADDED: Check for matching history on initial load
+            loadHistory() 
+            // Check for matching history on initial load
             findAndSelectMatchingHistoryEntry()
         }
         // Re-check permissions when the app becomes active again
@@ -320,7 +327,7 @@ struct ContentView: View {
                  }
              }
          }
-        // <<< ADDED: Monitor bookmark changes to auto-select history
+        // Monitor bookmark changes to auto-select history
         .onChange(of: sourceBookmarkData) { _, _ in findAndSelectMatchingHistoryEntry() }
         .onChange(of: targetBookmarkData) { _, _ in findAndSelectMatchingHistoryEntry() }
     }
@@ -906,10 +913,6 @@ struct ContentView: View {
              _ = sourceURL.startAccessingSecurityScopedResource()
              _ = targetURL.startAccessingSecurityScopedResource()
              print("Restarted access for newly selected source and target.")
-
-            // <<< ADDED: Check if this newly loaded pair matches history
-            // No need here, selection directly sets the ID.
-            // findAndSelectMatchingHistoryEntry()
 
         } else {
             print("Failed to resolve source or target for history entry.")
