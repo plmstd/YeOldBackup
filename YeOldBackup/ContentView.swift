@@ -349,11 +349,11 @@ struct ContentView: View {
             }
         } message: {
             if let stats = backupManager.deletionStats {
-                let percentage = stats.totalSource > 0 ? (Double(stats.count) / Double(stats.totalSource)) * 100 : 100.0
-                Text("Syncing will delete approximately \(stats.count) file(s) (around \(String(format: "%.0f", percentage))%) from the target '\((targetPath as NSString).lastPathComponent)' because they are not in the source '\((sourcePath as NSString).lastPathComponent)'.\n\nThis action cannot be undone. Are you sure you want to proceed?")
+                // Revised alert message focusing on mirroring and checking paths
+                Text("This sync operation will make the target '\((targetPath as NSString).lastPathComponent)' an exact copy of the source '\((sourcePath as NSString).lastPathComponent)'.\n\nThis involves deleting approximately \(stats.count) file(s) currently in the target.\n\nPlease double-check that these source and target locations are correct.\n\nProceed with deletion?")
             } else {
                 // Fallback message if stats aren't available for some reason
-                Text("This sync operation will delete a significant number of files from the target directory. Are you sure you want to proceed?")
+                Text("This sync operation will delete a significant number of files from the target directory to make it match the source.\n\nPlease double-check that these source and target locations are correct.\n\nProceed with deletion?")
             }
         }
     }
