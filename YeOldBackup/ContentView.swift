@@ -12,6 +12,14 @@ struct BackupHistoryEntry: Codable, Identifiable, Equatable {
     var targetPath: String // Store for display, update if bookmark resolves differently
     var lastSync: Date
 
+    // Helper to get the last path component for display
+    var sourceName: String {
+        return (sourcePath as NSString).lastPathComponent
+    }
+    var targetName: String {
+        return (targetPath as NSString).lastPathComponent
+    }
+
     // Equatable conformance based on bookmarks - assumes bookmarks are the canonical identity
     static func == (lhs: BackupHistoryEntry, rhs: BackupHistoryEntry) -> Bool {
         return lhs.sourceBookmark == rhs.sourceBookmark && lhs.targetBookmark == rhs.targetBookmark
@@ -35,6 +43,8 @@ struct ContentView: View {
 
     // State variable to hold the loaded backup history
     @State private var history: [BackupHistoryEntry] = []
+    // State variable to track the selected history item for highlighting
+    @State private var selectedHistoryEntryID: UUID? = nil
 
     // Instantiate the BackupManager
     @StateObject private var backupManager = BackupManager()
@@ -92,30 +102,44 @@ struct ContentView: View {
             // MARK: - Backup History List
             Text("Backup History")
                 .font(.headline)
+            
+            // Header Row
+            HStack {
+                Text("Source").font(.caption).frame(minWidth: 100, alignment: .leading)
+                Spacer().frame(width: 20)
+                Text("Target").font(.caption).frame(minWidth: 100, alignment: .leading)
+                Spacer()
+                Text("Last Synced").font(.caption).frame(minWidth: 120, alignment: .trailing)
+            }
+            .padding(.horizontal, 5)
+            .foregroundColor(.secondary)
+
             List {
                 if history.isEmpty {
                     Text("No backup history yet.")
                         .foregroundColor(.secondary)
                 } else {
                     ForEach(history) { entry in
+                        // Single Row Layout
                         HStack {
-                            VStack(alignment: .leading) {
-                                Text("Source: \(entry.sourcePath)")
-                                    .font(.caption)
-                                    .lineLimit(1).truncationMode(.middle)
-                                Text("Target: \(entry.targetPath)")
-                                    .font(.caption)
-                                    .lineLimit(1).truncationMode(.middle)
-                                Text("Last Synced: \(entry.lastSync, formatter: dateFormatter)")
-                                    .font(.caption2)
-                                    .foregroundColor(.secondary)
-                            }
+                            Text(entry.sourceName)
+                                .lineLimit(1).truncationMode(.middle)
+                                .help(entry.sourcePath) // Show full path on hover
+                            Image(systemName: "arrow.right")
+                            Text(entry.targetName)
+                                .lineLimit(1).truncationMode(.middle)
+                                .help(entry.targetPath) // Show full path on hover
                             Spacer()
+                            Text(entry.lastSync, formatter: dateFormatter)
+                                .font(.caption)
+                                .foregroundColor(.secondary)
                         }
                         .contentShape(Rectangle()) // Make entire row tappable
                         .onTapGesture {
                             selectHistoryEntry(entry)
                         }
+                        // Apply selection highlighting and default hover
+                        .listRowBackground(entry.id == selectedHistoryEntryID ? Color.accentColor.opacity(0.2) : nil)
                     }
                 }
             }
@@ -248,11 +272,13 @@ struct ContentView: View {
                             self.sourcePath = url.path // Update display path
                             // Resolve immediately to start accessing the *new* selection
                             self.accessedSourceURL = resolveBookmark(data: bookmarkData, type: .source)
+                            self.selectedHistoryEntryID = nil // Clear history selection
                         } else {
                             self.targetBookmarkData = bookmarkData
                             self.targetPath = url.path // Update display path
                              // Resolve immediately to start accessing the *new* selection
                             self.accessedTargetURL = resolveBookmark(data: bookmarkData, type: .target)
+                            self.selectedHistoryEntryID = nil // Clear history selection
                         }
                         // Reset status only if not currently running
                         if !backupManager.isRunning {
@@ -275,6 +301,7 @@ struct ContentView: View {
                         }
                         backupManager.progressMessage = "Error: Could not save selection."
                         backupManager.errorOccurred = true
+                        self.selectedHistoryEntryID = nil // Clear history selection
                     }
                 }
             }
@@ -514,6 +541,9 @@ struct ContentView: View {
             self.accessedSourceURL = sourceURL
             self.accessedTargetURL = targetURL
             
+            // 5. Update selection state for highlighting
+            self.selectedHistoryEntryID = entry.id
+            
             // 5. Update status message
             backupManager.progressMessage = "Loaded: \(shortPath(sourceURL.path)) -> \(shortPath(targetURL.path))"
             backupManager.errorOccurred = false
@@ -530,6 +560,7 @@ struct ContentView: View {
             backupManager.errorOccurred = true
             // Optionally, clear the main selection?
              // clearSelection()
+            self.selectedHistoryEntryID = nil // Clear selection if load fails
         }
     }
     
@@ -545,12 +576,20 @@ struct ContentView: View {
         let currentTargetPath = self.targetPath // Use the path currently in state
 
         // Find index of existing entry based on bookmark data
-        if let index = history.firstIndex(where: { $0.sourceBookmark == currentSourceBookmark && $0.targetBookmark == currentTargetBookmark }) {
+        var historyUpdated = false
+        var updatedHistory = self.history // Work on a mutable copy
+
+        if let index = updatedHistory.firstIndex(where: { $0.sourceBookmark == currentSourceBookmark && $0.targetBookmark == currentTargetBookmark }) {
             // Existing entry found, update it
-            history[index].lastSync = now
-            history[index].sourcePath = currentSourcePath // Update paths in case they resolved differently
-            history[index].targetPath = currentTargetPath
-             print("Updated existing history entry at index \(index).")
+            var entryToUpdate = updatedHistory[index]
+            entryToUpdate.lastSync = now
+            entryToUpdate.sourcePath = currentSourcePath // Update paths in case they resolved differently
+            entryToUpdate.targetPath = currentTargetPath
+            updatedHistory[index] = entryToUpdate // Assign the modified struct back
+            print("Updated existing history entry at index \(index).")
+            print("New last sync date: \(entryToUpdate.lastSync)")
+            print("Now: \(now)")
+            historyUpdated = true
         } else {
             // No existing entry, create a new one
             let newEntry = BackupHistoryEntry(id: UUID(),
@@ -559,11 +598,17 @@ struct ContentView: View {
                                               sourcePath: currentSourcePath,
                                               targetPath: currentTargetPath,
                                               lastSync: now)
-            history.append(newEntry)
+            updatedHistory.append(newEntry)
             print("Added new history entry with ID \(newEntry.id).")
+            historyUpdated = true
         }
-        
-        saveHistory()
+
+        if historyUpdated {
+             self.history = updatedHistory // Assign the updated array back to the @State variable
+             saveHistory() // This also sorts the history before saving
+             // Explicitly set selection ID to the one just run/added
+             self.selectedHistoryEntryID = history.first(where: { $0.sourceBookmark == currentSourceBookmark && $0.targetBookmark == currentTargetBookmark })?.id
+        }
     }
     
      // Helper to shorten paths for display
