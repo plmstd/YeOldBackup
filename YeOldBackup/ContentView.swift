@@ -3,9 +3,17 @@ import AppKit // Required for NSOpenPanel
 import SystemConfiguration // For System Preferences URL
 
 struct ContentView: View {
-    // Use AppStorage to automatically persist/load from UserDefaults
-    @AppStorage("sourcePath") private var sourcePath: String = ""
-    @AppStorage("targetPath") private var targetPath: String = ""
+    // Use AppStorage to store bookmark data
+    @AppStorage("sourceBookmarkData") private var sourceBookmarkData: Data?
+    @AppStorage("targetBookmarkData") private var targetBookmarkData: Data?
+
+    // State variables to hold the resolved paths for display and use
+    @State private var sourcePath: String = ""
+    @State private var targetPath: String = ""
+    
+    // State variables to hold the URLs we are currently accessing
+    @State private var accessedSourceURL: URL?
+    @State private var accessedTargetURL: URL?
 
     // Instantiate the BackupManager
     @StateObject private var backupManager = BackupManager()
@@ -28,7 +36,7 @@ struct ContentView: View {
             HStack {
                 Text("Source:")
                     .frame(width: 60, alignment: .trailing)
-                TextField("No source selected", text: .constant(sourcePath))
+                TextField("No source selected", text: $sourcePath)
                     .disabled(true)
                 Button("Select...") {
                     selectDirectory(for: .source)
@@ -41,7 +49,7 @@ struct ContentView: View {
             HStack {
                 Text("Target:")
                     .frame(width: 60, alignment: .trailing)
-                TextField("No target selected", text: .constant(targetPath))
+                TextField("No target selected", text: $targetPath)
                     .disabled(true)
                 Button("Select...") {
                     selectDirectory(for: .target)
@@ -87,6 +95,8 @@ struct ContentView: View {
         .frame(minWidth: 550, minHeight: 300) // Adjusted size for warning
         .onAppear {
             checkPermissions()
+            // Attempt to resolve bookmarks on appear
+            resolveBookmarks()
             // Initialize status message on appear if not already running
             if !backupManager.isRunning {
                 backupManager.progressMessage = "Ready"
@@ -95,6 +105,8 @@ struct ContentView: View {
         // Re-check permissions when the app becomes active again
         .onReceive(NotificationCenter.default.publisher(for: NSApplication.didBecomeActiveNotification)) { _ in
              checkPermissions()
+             // Re-resolve bookmarks in case permissions changed while inactive
+             resolveBookmarks()
         }
     }
 
@@ -128,7 +140,7 @@ struct ContentView: View {
         case source, target
     }
 
-    // Function to open the directory selection panel
+    // Function to open the directory selection panel and store bookmark
     private func selectDirectory(for type: PathType) {
         let openPanel = NSOpenPanel()
         openPanel.title = (type == .source) ? "Select Source Drive/Folder" : "Select Target Drive/Folder"
@@ -143,28 +155,180 @@ struct ContentView: View {
         // This is crucial for accessing arbitrary locations selected by the user.
         openPanel.begin { response in
             if response == .OK, let url = openPanel.url {
-                // Persist access permissions using security-scoped bookmarks
-                _ = url.startAccessingSecurityScopedResource()
+                // Stop accessing any previously accessed URL of this type
+                 stopAccessingURL(for: type)
 
-                let path = url.path
-                DispatchQueue.main.async {
-                    if type == .source {
-                        self.sourcePath = path
-                    } else {
-                        self.targetPath = path
+                // Generate bookmark data
+                do {
+                    // Start access before creating bookmark
+                    guard url.startAccessingSecurityScopedResource() else {
+                         print("Error: Could not start accessing selected resource for bookmark generation.")
+                         // Optionally show an alert to the user
+                         return
                     }
-                    // Reset status only if not currently running
-                    if !backupManager.isRunning {
-                         backupManager.progressMessage = "Ready"
-                         backupManager.errorOccurred = false // Reset error state too
+                    let bookmarkData = try url.bookmarkData(options: .withSecurityScope, includingResourceValuesForKeys: nil, relativeTo: nil)
+                    // Stop access immediately after creating bookmark
+                    url.stopAccessingSecurityScopedResource()
+
+                    // Store the bookmark data and update the path state variable
+                    DispatchQueue.main.async {
+                        if type == .source {
+                            self.sourceBookmarkData = bookmarkData
+                            self.sourcePath = url.path // Update display path
+                            // Resolve immediately to start accessing the *new* selection
+                            self.accessedSourceURL = resolveBookmark(data: bookmarkData, type: .source)
+                        } else {
+                            self.targetBookmarkData = bookmarkData
+                            self.targetPath = url.path // Update display path
+                             // Resolve immediately to start accessing the *new* selection
+                            self.accessedTargetURL = resolveBookmark(data: bookmarkData, type: .target)
+                        }
+                        // Reset status only if not currently running
+                        if !backupManager.isRunning {
+                             backupManager.progressMessage = "Ready"
+                             backupManager.errorOccurred = false
+                        }
+                    }
+                } catch {
+                    print("Error creating bookmark data for \(url.path): \(error)")
+                     url.stopAccessingSecurityScopedResource() // Ensure access is stopped on error
+                    // Optionally show an error alert to the user
+                    DispatchQueue.main.async {
+                        // Clear potentially broken state
+                        if type == .source {
+                            self.sourceBookmarkData = nil
+                            self.sourcePath = ""
+                        } else {
+                            self.targetBookmarkData = nil
+                            self.targetPath = ""
+                        }
+                        backupManager.progressMessage = "Error: Could not save selection."
+                        backupManager.errorOccurred = true
                     }
                 }
-                // Note: You might want to stop accessing the resource later
-                // url.stopAccessingSecurityScopedResource()
-                // Or better, store the bookmark data and resolve it when needed.
-                // For this simple app, retaining access until app quit might be acceptable.
             }
         }
+    }
+
+    // MARK: - Bookmark Handling
+
+    // Resolve saved bookmarks on launch or when needed
+    private func resolveBookmarks() {
+         print("Attempting to resolve bookmarks...")
+         stopAccessingURL(for: .source) // Stop previous access before resolving
+         stopAccessingURL(for: .target)
+
+         if let sourceData = sourceBookmarkData {
+             self.accessedSourceURL = resolveBookmark(data: sourceData, type: .source)
+         } else {
+             self.sourcePath = "" // Clear path if no bookmark data
+         }
+
+         if let targetData = targetBookmarkData {
+             self.accessedTargetURL = resolveBookmark(data: targetData, type: .target)
+         } else {
+             self.targetPath = "" // Clear path if no bookmark data
+         }
+         
+         // Update status if paths are missing after trying to resolve
+         if (sourceBookmarkData != nil && sourcePath.isEmpty) || (targetBookmarkData != nil && targetPath.isEmpty) {
+             if !backupManager.isRunning {
+                backupManager.progressMessage = "Could not access previous locations."
+                backupManager.errorOccurred = true
+             }
+         } else if sourcePath.isEmpty || targetPath.isEmpty {
+             if !backupManager.isRunning {
+                 backupManager.progressMessage = "Select source and target."
+             }
+         } else {
+             if !backupManager.isRunning && !backupManager.errorOccurred {
+                  backupManager.progressMessage = "Ready"
+             }
+         }
+    }
+
+    // Resolve a single bookmark
+    private func resolveBookmark(data: Data, type: PathType) -> URL? {
+        var isStale = false
+        do {
+            let resolvedUrl = try URL(resolvingBookmarkData: data, options: .withSecurityScope, relativeTo: nil, bookmarkDataIsStale: &isStale)
+
+            if isStale {
+                print("Warning: Bookmark data is stale for \(type). Re-creating.")
+                // If stale, try to recreate the bookmark immediately
+                // Need to start access first to get a new bookmark
+                guard resolvedUrl.startAccessingSecurityScopedResource() else {
+                    print("Error: Could not start accessing stale resource to refresh bookmark for \(type).")
+                    throw NSError(domain: NSCocoaErrorDomain, code: NSFileReadNoPermissionError, userInfo: nil) // Simulate a permission error
+                }
+                let newBookmarkData = try resolvedUrl.bookmarkData(options: .withSecurityScope, includingResourceValuesForKeys: nil, relativeTo: nil)
+                 // No need to stop/start access again here, we already started.
+                 // Update stored data and path
+                 DispatchQueue.main.async {
+                     if type == .source {
+                         self.sourceBookmarkData = newBookmarkData
+                         self.sourcePath = resolvedUrl.path
+                     } else {
+                         self.targetBookmarkData = newBookmarkData
+                         self.targetPath = resolvedUrl.path
+                     }
+                 }
+                 print("Successfully refreshed stale bookmark for \(type).")
+                 return resolvedUrl // Return the URL we already started accessing
+
+            } else {
+                 // Bookmark is not stale, just start accessing
+                 guard resolvedUrl.startAccessingSecurityScopedResource() else {
+                     print("Error: Could not start accessing resource for \(type).")
+                     throw NSError(domain: NSCocoaErrorDomain, code: NSFileReadNoPermissionError, userInfo: nil) // Simulate a permission error
+                 }
+                 // Update the path state variable
+                  DispatchQueue.main.async {
+                      if type == .source {
+                          self.sourcePath = resolvedUrl.path
+                      } else {
+                          self.targetPath = resolvedUrl.path
+                      }
+                  }
+                  print("Successfully resolved and started accessing bookmark for \(type): \(resolvedUrl.path)")
+                  return resolvedUrl
+            }
+
+        } catch {
+            print("Error resolving bookmark for \(type): \(error). Clearing stored data.")
+            // Clear the invalid bookmark data and path
+            DispatchQueue.main.async {
+                if type == .source {
+                    self.sourceBookmarkData = nil
+                    self.sourcePath = ""
+                    self.accessedSourceURL = nil // Clear the state URL too
+                } else {
+                    self.targetBookmarkData = nil
+                    self.targetPath = ""
+                    self.accessedTargetURL = nil // Clear the state URL too
+                }
+            }
+            return nil
+        }
+    }
+    
+    // Stop accessing a specific URL
+    private func stopAccessingURL(for type: PathType) {
+        if type == .source, let url = accessedSourceURL {
+            url.stopAccessingSecurityScopedResource()
+            accessedSourceURL = nil
+            print("Stopped accessing source URL: \(url.path)")
+        } else if type == .target, let url = accessedTargetURL {
+            url.stopAccessingSecurityScopedResource()
+            accessedTargetURL = nil
+            print("Stopped accessing target URL: \(url.path)")
+        }
+    }
+    
+    // Stop accessing all tracked URLs
+    func stopAccessingAllURLs() {
+         stopAccessingURL(for: .source)
+         stopAccessingURL(for: .target)
     }
 
     // Placeholder for the backup logic
