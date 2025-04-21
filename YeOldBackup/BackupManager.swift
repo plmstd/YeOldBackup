@@ -20,6 +20,12 @@ enum BackupError: Error, LocalizedError {
     }
 }
 
+// <<< ADDED: Struct to hold dry run results
+struct DryRunInfo {
+    let needsSync: Bool
+    let transferCount: Int
+}
+
 class BackupManager: ObservableObject {
     @Published var progressMessage: String = ""
     @Published var isRunning: Bool = false
@@ -75,8 +81,9 @@ class BackupManager: ObservableObject {
 
             // Check dry run result
             switch dryRunResult {
-            case .success(let count):
-                if count == 0 {
+            case .success(let info):
+                // Check if any sync operation (transfer or deletion) is needed
+                if !info.needsSync {
                     DispatchQueue.main.async {
                         self.progressMessage = "Already up to date."
                         self.isRunning = false
@@ -85,10 +92,15 @@ class BackupManager: ObservableObject {
                     self.cleanupRunningProcess() // Clean up just in case
                     return // Nothing to do
                 }
-                // Store count and proceed to actual backup
-                self.totalFilesToTransfer = count
+                // Store count for progress bar and proceed
+                self.totalFilesToTransfer = info.transferCount
                 DispatchQueue.main.async {
-                    self.progressMessage = "Found \\(count) changes..."
+                    // Adjust message slightly if only deletions are happening
+                    if info.transferCount > 0 {
+                        self.progressMessage = "Found \(info.transferCount) files to transfer..."
+                    } else {
+                        self.progressMessage = "Performing deletions..."
+                    }
                 }
 
             case .failure(let error):
@@ -114,10 +126,15 @@ class BackupManager: ObservableObject {
              self.process = Process()
              self.process?.executableURL = URL(fileURLWithPath: "/usr/bin/rsync")
              // Use -i (--itemize-changes) instead of --progress
+             
+             // Log the actual rsync command we're about to run
+             print("DEBUG: Running actual backup with rsync: /usr/bin/rsync -a --delete -i -v [excludes] \(rsyncSource) \(rsyncTarget)")
+             
              self.process?.arguments = [
                  "-a",
                  "--delete",
                  "-i", // Itemize changes for parsing file counts
+                 "-v", // Verbose output to clearly show deletions
                  // Add excludes back
                  "--exclude", ".Spotlight-V100/",
                  "--exclude", ".fseventsd/",
@@ -235,13 +252,26 @@ class BackupManager: ObservableObject {
     }
 
     // Helper function to perform the dry run and parse the count
-    private func performDryRun(source: String, target: String) -> Result<Int, BackupError> {
+    private func performDryRun(source: String, target: String) -> Result<DryRunInfo, BackupError> {
         let dryRunProcess = Process()
         dryRunProcess.executableURL = URL(fileURLWithPath: "/usr/bin/rsync")
+       
+        // <<< DEBUG: Log the exact rsync command being constructed
+        let rsyncCommand = ["-n", "-a", "--delete", "--stats",
+                            "--exclude", ".Spotlight-V100/",
+                            "--exclude", ".fseventsd/",
+                            "--exclude", ".Trashes",
+                            "--exclude", ".TemporaryItems/",
+                            "--exclude", ".DS_Store",
+                            source, target]
+        print("DEBUG: Dry run rsync command: /usr/bin/rsync \(rsyncCommand.joined(separator: " "))")
+       
         dryRunProcess.arguments = [
             "-n", // Dry run
             "-a", // Archive mode (needed for accurate comparison)
+            "--delete", // <<< ADDED: Essential to calculate deletions for stats
             "--stats", // Get statistics including transfer counts
+            "-v", // Verbose output to check what's being identified
             // Add excludes
             "--exclude", ".Spotlight-V100/",
             "--exclude", ".fseventsd/",
@@ -266,28 +296,61 @@ class BackupManager: ObservableObject {
             let outputString = String(data: outputData, encoding: .utf8) ?? ""
             let errorString = String(data: errorData, encoding: .utf8) ?? ""
 
+            print("DEBUG: ---------- DRY RUN OUTPUT START ----------")
+            print(outputString)
+            print("DEBUG: ---------- DRY RUN OUTPUT END ----------")
+            
+            if !errorString.isEmpty {
+                print("DEBUG: ---------- DRY RUN ERROR OUTPUT START ----------")
+                print(errorString)
+                print("DEBUG: ---------- DRY RUN ERROR OUTPUT END ----------")
+            }
+            
             if dryRunProcess.terminationStatus == 0 {
-                // Parse the output for "Number of files transferred:"
+                // Parse relevant stats
+                var transferCount = 0
+                var deletionCount = 0
+
+                // Parse transfers
                 if let range = outputString.range(of: "Number of files transferred: ") {
                     let numberString = outputString[range.upperBound...].prefix { $0.isNumber }
-                    if let count = Int(numberString) {
-                        print("Dry run complete. Files to transfer: \(count)")
-                        return .success(count)
-                    } else {
-                        print("Dry run stats found, but couldn't parse number: \(outputString)")
-                        // If stats are present but count is weird, assume 0 changes? Or treat as error?
-                        // Let's assume 0 if parsing fails after finding the line.
-                         return .success(0)
+                    transferCount = Int(numberString) ?? 0
+                    print("DEBUG: Parsed transfer count: \(transferCount)")
+                } else {
+                    print("DEBUG: Could not find 'Number of files transferred:' in output")
+                }
+
+                // Parse deletions
+                if let range = outputString.range(of: "Number of deletions: ") {
+                    let numberString = outputString[range.upperBound...].prefix { $0.isNumber }
+                    deletionCount = Int(numberString) ?? 0
+                    print("DEBUG: Parsed deletion count: \(deletionCount)")
+                } else {
+                    print("DEBUG: Could not find 'Number of deletions:' in output")
+                    
+                    // Try alternative parsing for older rsync versions
+                    if outputString.contains("deleting ") {
+                        print("DEBUG: Found 'deleting' entries in the verbose output - calculating manually")
+                        let lines = outputString.split(separator: "\n")
+                        let deletingLines = lines.filter { $0.contains("deleting ") }
+                        deletionCount = deletingLines.count
+                        print("DEBUG: Manually counted \(deletionCount) deletion entries")
                     }
-                } else if outputString.contains("Number of files:") {
-                     // If "Number of files transferred" is missing, but stats are present, means 0 files were transferred.
-                     print("Dry run complete. No files need transferring.")
-                     return .success(0)
-                 } else {
-                     print("Dry run stats format unexpected or missing 'transferred' line: \(outputString)")
-                     // If stats format is totally weird, treat as an error.
-                     return .failure(.dryRunParseFailed)
-                 }
+                }
+
+                // Determine if a sync is needed
+                let needsSync = transferCount > 0 || deletionCount > 0
+
+                print("Dry run complete. Needs Sync: \(needsSync), Files to transfer: \(transferCount), Deletions: \(deletionCount)")
+
+                // Check if *any* stats were found. If not, could be an issue.
+                if outputString.contains("Number of files:") { // Basic check that stats output exists
+                    return .success(DryRunInfo(needsSync: needsSync, transferCount: transferCount))
+                } else {
+                    // If stats section is missing entirely, treat as parse error
+                    print("Dry run stats section missing or unexpected format: \(outputString)")
+                    return .failure(.dryRunParseFailed)
+                }
             } else {
                 print("Dry run failed. Status: \(dryRunProcess.terminationStatus), Error: \(errorString)")
                 let message = errorString.isEmpty ? "Unknown (Code: \(dryRunProcess.terminationStatus))" : errorString
