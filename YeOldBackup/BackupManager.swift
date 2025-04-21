@@ -6,6 +6,7 @@ class BackupManager: ObservableObject {
     @Published var isRunning: Bool = false
     @Published var errorOccurred: Bool = false
     @Published var lastErrorMessage: String = ""
+    @Published var progressValue: Double = 0.0
 
     private var process: Process?
     private var outputPipe: Pipe?
@@ -30,6 +31,7 @@ class BackupManager: ObservableObject {
             self.progressMessage = "Starting backup..."
             self.errorOccurred = false
             self.lastErrorMessage = ""
+            self.progressValue = 0.0
         }
 
         process = Process()
@@ -39,7 +41,7 @@ class BackupManager: ObservableObject {
         // --delete: Deletes files on the target that don't exist on the source
         // --progress: Shows progress during transfer (we'll try to parse this)
         // --exclude: Skip specific system/temporary files/folders
-        // NOTE: Consider adding --info=progress2 for potentially more parsable progress
+        // NOTE: macOS default rsync (2.6.9) does NOT support --info=progress2.
         process?.arguments = [
             "-a",
             "--delete",
@@ -64,14 +66,54 @@ class BackupManager: ObservableObject {
             let data = fileHandle.availableData
             if data.isEmpty {
                 // EOF
+                DispatchQueue.main.async {
+                    if !(self?.errorOccurred ?? true) && (self?.isRunning ?? false) {
+                        // self?.progressValue = 1.0 // Set to 100% - Let termination handler do this.
+                    }
+                }
                 self?.outputPipe?.fileHandleForReading.readabilityHandler = nil
             } else if let output = String(data: data, encoding: .utf8), !output.isEmpty {
-                // Try to extract the last line as the current status
-                let lastLine = output.trimmingCharacters(in: .whitespacesAndNewlines).components(separatedBy: "\n").last ?? ""
-                DispatchQueue.main.async {
-                     // Filter out empty lines or percentage updates for cleaner status
-                    if !lastLine.isEmpty && !lastLine.contains("%") {
-                        self?.progressMessage = "Processing: \(lastLine)"
+                // Parse --progress output
+                // Example line: "      1,234,567  85%   95.50MB/s    0:00:10 (xfr#5, to-chk=15/50)"
+                // Or just filename on one line, progress on the next.
+                // We look for lines containing "%"
+                let lines = output.split(whereSeparator: { $0.isNewline || $0 == "\r" }) // Split by newline or carriage return
+                var lastParsedPercentage: Double? = nil
+
+                for line in lines {
+                    let lineStr = String(line).trimmingCharacters(in: .whitespaces)
+                    // Simple check for percentage sign
+                    if lineStr.contains("%") {
+                        // Extract the percentage value, typically after file size
+                        let components = lineStr.split(separator: " ", omittingEmptySubsequences: true)
+                        // Find the component that ends with %
+                        if let percentageComponent = components.first(where: { $0.contains("%") }) {
+                            let percentageString = String(percentageComponent).replacingOccurrences(of: "%", with: "")
+                            if let percentage = Double(percentageString) {
+                                // Store the last found percentage in this chunk
+                                lastParsedPercentage = max(0.0, min(1.0, percentage / 100.0))
+                            }
+                        }
+                    }
+                }
+
+                // Update the UI with the last percentage found in this data chunk
+                if let finalPercentage = lastParsedPercentage {
+                    DispatchQueue.main.async {
+                        self?.progressValue = finalPercentage
+                        // Update status message to reflect the percentage being processed
+                        self?.progressMessage = "Syncing (\(Int(finalPercentage * 100))%)..."
+                        // print("Parsed (--progress) Progress: \(self?.progressValue ?? -1)") // Debug print
+                    }
+                } else {
+                    // If no percentage in this chunk, maybe it's just a filename?
+                    // Update the status message with the last non-empty line
+                    if let lastStatusLine = lines.last(where: { !$0.trimmingCharacters(in: .whitespaces).isEmpty }) {
+                        DispatchQueue.main.async {
+                            if !(self?.progressMessage.contains("Syncing") ?? false) { // Avoid overwriting percentage status
+                                self?.progressMessage = "Processing: \(String(lastStatusLine).trimmingCharacters(in: .whitespaces))"
+                            }
+                        }
                     }
                 }
             }
@@ -102,6 +144,7 @@ class BackupManager: ObservableObject {
                 self?.isRunning = false
                 if process.terminationStatus == 0 && !(self?.errorOccurred ?? false) {
                     self?.progressMessage = "Backup Complete."
+                    self?.progressValue = 1.0
                     print("rsync finished successfully.")
                 } else {
                     self?.errorOccurred = true
@@ -110,6 +153,14 @@ class BackupManager: ObservableObject {
                     }
                     self?.progressMessage = "Backup Failed. Check logs." // Update final status
                     print("rsync failed. Status: \(process.terminationStatus), Error: \(self?.lastErrorMessage ?? "Unknown")")
+                }
+                // Reset progress if stopped manually
+                DispatchQueue.main.async { [weak self] in
+                    guard let self = self else { return }
+                    if self.isRunning {
+                        self.progressMessage = "Backup Stopped."
+                        self.progressValue = 0.0
+                    }
                 }
             }
         }

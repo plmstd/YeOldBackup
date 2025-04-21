@@ -181,9 +181,11 @@ struct ContentView: View {
                     .keyboardShortcut(.defaultAction) // Allow hitting Enter to backup
                 }
 
-                ProgressView()
-                    .opacity(backupManager.isRunning ? 1 : 0)
+                // Determinate ProgressView bound to the BackupManager's progress
+                ProgressView(value: backupManager.progressValue)
                     .padding(.leading, 5)
+                    // Show the progress bar only when running
+                    .opacity(backupManager.isRunning ? 1 : 0)
 
                 Spacer() // Push status text to the right
 
