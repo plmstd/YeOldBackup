@@ -246,7 +246,7 @@
 		B28FCFC42DB6421A00A1F512 /* Debug */ = {
 			isa = XCBuildConfiguration;
 			buildSettings = {
-				ASSETCATALOG_COMPILER_APPICON_NAME = AppIcon;
+				ASSETCATALOG_COMPILER_APPICON_NAME = YeOldBackup;
 				ASSETCATALOG_COMPILER_GLOBAL_ACCENT_COLOR_NAME = AccentColor;
 				CODE_SIGN_ENTITLEMENTS = YeOldBackup/YeOldBackup.entitlements;
 				CODE_SIGN_STYLE = Automatic;
@@ -273,7 +273,7 @@
 		B28FCFC52DB6421A00A1F512 /* Release */ = {
 			isa = XCBuildConfiguration;
 			buildSettings = {
-				ASSETCATALOG_COMPILER_APPICON_NAME = AppIcon;
+				ASSETCATALOG_COMPILER_APPICON_NAME = YeOldBackup;
 				ASSETCATALOG_COMPILER_GLOBAL_ACCENT_COLOR_NAME = AccentColor;
 				CODE_SIGN_ENTITLEMENTS = YeOldBackup/YeOldBackup.entitlements;
 				CODE_SIGN_STYLE = Automatic;

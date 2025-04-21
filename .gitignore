@@ -1,0 +1,21 @@
+# Xcode
+*.xcworkspace
+*.xcuserdata
+*.xcodeproj/project.xcworkspace/
+*.xcodeproj/xcuserdata/
+
+# macOS system
+.DS_Store
+
+# Build stuff
+build/
+DerivedData/
+
+# SwiftPM
+Packages/
+.swiftpm/
+.build/
+
+# Signing (just in case)
+*.mobileprovision
+*.p12

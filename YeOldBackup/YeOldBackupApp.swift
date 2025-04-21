@@ -1,8 +1,7 @@
 //
-//  YeOldBackupApp.swift
 //  YeOldBackup
 //
-//  Created by Benedikt Falkenstein on 21.04.25.
+//  Created by palmstudio GmbH
 //
 
 import SwiftUI
@@ -14,4 +13,4 @@ struct YeOldBackupApp: App {
             ContentView()
         }
     }
-}
+} 

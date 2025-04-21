@@ -1,0 +1,15 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<!--
+   Info.plist
+   YeOldBackup
+
+   Created by @bennyqp (x)
+   Copyright (c) 2025 palmstudio GmbH. All rights reserved.
+-->
+<plist version="1.0">
+<dict>
+    <key>NSSystemAdministrationUsageDescription</key>
+    <string>YeOldBackup requires Full Disk Access to reliably back up all files from the selected source to the target drive, including system files and folders like Documents, Desktop, and Downloads.</string>
+</dict>
+</plist>
