@@ -252,6 +252,7 @@ class BackupManager: ObservableObject {
               "--exclude", ".Trashes",
               "--exclude", ".TemporaryItems/",
               "--exclude", ".DS_Store",
+              "--exclude", ".DocumentRevisions-V100/",
               rsyncSource,
               rsyncTarget
           ]
@@ -429,6 +430,7 @@ class BackupManager: ObservableObject {
             "--exclude", ".Trashes",
             "--exclude", ".TemporaryItems/",
             "--exclude", ".DS_Store",
+            "--exclude", ".DocumentRevisions-V100/",
             source,
             target
         ]
