@@ -42,7 +42,9 @@ class BackupManager: ObservableObject {
     @Published var showReport: Bool = false
     @Published var reportContent: String = ""
 
-    // <<< ADDED: State for dry run progress indication
+    // <<< ADDED: State for dry run scanning progress indication
+    @Published var dryRunScannedFilesCount: Int = 0
+    // State for dry run itemized changes progress indication
     @Published var dryRunDiscoveredChangesCount: Int = 0
 
     // <<< ADDED: State for deletion confirmation
@@ -86,6 +88,7 @@ class BackupManager: ObservableObject {
             self.requiresDeletionConfirmation = false // Reset confirmation flag
             self.deletionStats = nil
             self.dryRunDiscoveredChangesCount = 0 // <<< ADDED: Reset dry run counter
+            self.dryRunScannedFilesCount = 0 // <<< ADDED: Reset scan counter
         }
 
         // Perform dry run asynchronously
@@ -99,6 +102,7 @@ class BackupManager: ObservableObject {
             DispatchQueue.main.async {
                 self.progressMessage = "Calculating changes..."
                 self.dryRunDiscoveredChangesCount = 0 // Ensure reset just before run
+                self.dryRunScannedFilesCount = 0 // Ensure reset just before run
             }
 
             let dryRunResult = self.performDryRun(source: rsyncSource, target: rsyncTarget)
@@ -377,6 +381,7 @@ class BackupManager: ObservableObject {
                            self.progressMessage = "Backup Failed."
                            // Reset discovery count on failure display
                            self.dryRunDiscoveredChangesCount = 0
+                           self.dryRunScannedFilesCount = 0 // <<< ADDED: Reset scan counter
                            // Prepend summary to report content
                            self.reportContent = "Backup finished with errors (Code: \(exitCode)).\nErrors:\n\(self.lastErrorMessage)\n---\nDetails:\n" + self.reportContent
                            print("rsync failed. Status: \(exitCode), Error Accum: \(self.lastErrorMessage)")
@@ -418,7 +423,7 @@ class BackupManager: ObservableObject {
             "--delete", // Include deletions in calculation
             "--stats", // Get statistics
             "-i", // Itemize changes (needed to detect *if* changes exist beyond stats summary)
-            // "-v", // Verbose output - not strictly needed if parsing stats and itemized summary
+            "-vv", // <<< MODIFIED: Use double verbose for scanning feedback
             "--exclude", ".Spotlight-V100/",
             "--exclude", ".fseventsd/",
             "--exclude", ".Trashes",
@@ -439,6 +444,7 @@ class BackupManager: ObservableObject {
         let outputQueue = DispatchQueue(label: "rsync-dryrun-output-queue")
         let errorQueue = DispatchQueue(label: "rsync-dryrun-error-queue")
         var localChangesCount = 0 // Accumulate changes locally before dispatching
+        var localScannedCount = 0 // <<< ADDED: Accumulate scanned files locally
 
         // --- Output Parsing (Itemized Changes for Live Feedback) ---
         outputPipe.fileHandleForReading.readabilityHandler = { [weak self] fileHandle in
@@ -455,21 +461,43 @@ class BackupManager: ObservableObject {
 
                 let lines = outputChunk.split(whereSeparator: \.isNewline)
                 var changesInChunk = 0
+                var scannedInChunk = 0 // <<< ADDED: Counter for this chunk
                 for line in lines {
+                    let lineStr = String(line)
+                    // Count files being considered/excluded during initial scan (from -vv)
+                    if lineStr.contains("hiding file") || lineStr.contains("receiving file list") { // <<< MODIFIED: Check for hiding/receiving
+                        scannedInChunk += 1
+                    }
                     // Count potential changes based on rsync -i output prefixes
-                    if line.hasPrefix(">f") || line.hasPrefix(".f") || line.hasPrefix("*deleting") || line.hasPrefix("cd") || line.hasPrefix(".d") {
+                    if lineStr.hasPrefix(">f") || lineStr.hasPrefix(".f") || lineStr.hasPrefix("*deleting") || lineStr.hasPrefix("cd") || lineStr.hasPrefix(".d") {
                         changesInChunk += 1
                     }
                 }
 
-                if changesInChunk > 0 {
+                if changesInChunk > 0 || scannedInChunk > 0 { // <<< MODIFIED: Check both counters
                     localChangesCount += changesInChunk
+                    localScannedCount += scannedInChunk // <<< ADDED: Update local scanned count
                     // Update UI on main thread
                     DispatchQueue.main.async {
                         // Only update if the process is still considered running (avoid updates after stop)
                         guard self.isRunning else { return }
+
+                        // Update total counts
+                        self.dryRunScannedFilesCount = localScannedCount
+                        let hadChangesBefore = self.dryRunDiscoveredChangesCount > 0 // Check before updating
                         self.dryRunDiscoveredChangesCount = localChangesCount
-                        self.progressMessage = "Calculating changes (found \(localChangesCount) potential changes)..."
+                        let hasChangesNow = self.dryRunDiscoveredChangesCount > 0
+
+                        // Update message: Show scanning progress first, then itemized changes
+                        if hasChangesNow {
+                            // Once itemized changes appear, show that count
+                            self.progressMessage = "Calculating changes (found \(self.dryRunDiscoveredChangesCount) potential changes)..."
+                        } else if self.dryRunScannedFilesCount > 0 {
+                            // If no itemized changes yet, but scanning has started, show scanned count
+                            self.progressMessage = "Scanning files (\(self.dryRunScannedFilesCount) processed)..."
+                        }
+                        // Else: If neither counter is > 0, the message remains the initial "Calculating changes..."
+
                         // print("Dry run found changes: \(localChangesCount)") // DEBUG
                     }
                 }
@@ -674,6 +702,7 @@ class BackupManager: ObservableObject {
                           }
                           self.progressValue = 0.0
                           self.dryRunDiscoveredChangesCount = 0 // Ensure reset
+                          self.dryRunScannedFilesCount = 0 // <<< ADDED: Ensure reset
                       }
                   } else {
                        print("Process terminated after SIGINT.")
@@ -692,6 +721,7 @@ class BackupManager: ObservableObject {
                                 self.progressValue = 0.0 // Reset progress
                             }
                              self.dryRunDiscoveredChangesCount = 0 // Ensure reset
+                             self.dryRunScannedFilesCount = 0 // <<< ADDED: Ensure reset
                        }
                   }
               }
