@@ -42,6 +42,9 @@ class BackupManager: ObservableObject {
     @Published var showReport: Bool = false
     @Published var reportContent: String = ""
 
+    // <<< ADDED: State for dry run progress indication
+    @Published var dryRunDiscoveredChangesCount: Int = 0
+
     // <<< ADDED: State for deletion confirmation
     @Published var requiresDeletionConfirmation: Bool = false
     // Stores (deletionCount, totalSourceFilesCount)
@@ -82,6 +85,7 @@ class BackupManager: ObservableObject {
             self.reportContent = ""
             self.requiresDeletionConfirmation = false // Reset confirmation flag
             self.deletionStats = nil
+            self.dryRunDiscoveredChangesCount = 0 // <<< ADDED: Reset dry run counter
         }
 
         // Perform dry run asynchronously
@@ -94,6 +98,7 @@ class BackupManager: ObservableObject {
             // --- Phase 1: Dry Run ---
             DispatchQueue.main.async {
                 self.progressMessage = "Calculating changes..."
+                self.dryRunDiscoveredChangesCount = 0 // Ensure reset just before run
             }
 
             let dryRunResult = self.performDryRun(source: rsyncSource, target: rsyncTarget)
@@ -370,6 +375,8 @@ class BackupManager: ObservableObject {
                                 self.lastErrorMessage = baseErrorMsg + "\n" + self.lastErrorMessage
                            }
                            self.progressMessage = "Backup Failed."
+                           // Reset discovery count on failure display
+                           self.dryRunDiscoveredChangesCount = 0
                            // Prepend summary to report content
                            self.reportContent = "Backup finished with errors (Code: \(exitCode)).\nErrors:\n\(self.lastErrorMessage)\n---\nDetails:\n" + self.reportContent
                            print("rsync failed. Status: \(exitCode), Error Accum: \(self.lastErrorMessage)")
@@ -426,25 +433,93 @@ class BackupManager: ObservableObject {
         dryRunProcess.standardOutput = outputPipe
         dryRunProcess.standardError = errorPipe
 
-        do {
-            // <<< ADDED: Assign to instance property so stopBackup can find it >>>
-            self.process = dryRunProcess
-            print("Starting dry run...") // DEBUG
-            try dryRunProcess.run()
-            dryRunProcess.waitUntilExit() // Wait for the dry run to complete
-            print("Dry run finished with status: \(dryRunProcess.terminationStatus)") // DEBUG
+        // <<< MODIFIED: Use readability handlers for live feedback >>>
+        var accumulatedOutput = ""
+        var accumulatedError = ""
+        let outputQueue = DispatchQueue(label: "rsync-dryrun-output-queue")
+        let errorQueue = DispatchQueue(label: "rsync-dryrun-error-queue")
+        var localChangesCount = 0 // Accumulate changes locally before dispatching
 
-            let outputData = outputPipe.fileHandleForReading.readDataToEndOfFile()
-            let errorData = errorPipe.fileHandleForReading.readDataToEndOfFile()
-            let outputString = String(data: outputData, encoding: .utf8) ?? ""
-            let errorString = String(data: errorData, encoding: .utf8) ?? ""
+        // --- Output Parsing (Itemized Changes for Live Feedback) ---
+        outputPipe.fileHandleForReading.readabilityHandler = { [weak self] fileHandle in
+            guard let self = self else { return }
+            let data = fileHandle.availableData
+            if data.isEmpty { // EOF potentially
+                // Don't nil out handler here, wait for termination handler
+                return
+            }
 
-             // print("Dry run stdout:\n\(outputString)") // DEBUG
-             // print("Dry run stderr:\n\(errorString)") // DEBUG
+            outputQueue.async {
+                guard let outputChunk = String(data: data, encoding: .utf8), !outputChunk.isEmpty else { return }
+                accumulatedOutput += outputChunk
+
+                let lines = outputChunk.split(whereSeparator: \.isNewline)
+                var changesInChunk = 0
+                for line in lines {
+                    // Count potential changes based on rsync -i output prefixes
+                    if line.hasPrefix(">f") || line.hasPrefix(".f") || line.hasPrefix("*deleting") || line.hasPrefix("cd") || line.hasPrefix(".d") {
+                        changesInChunk += 1
+                    }
+                }
+
+                if changesInChunk > 0 {
+                    localChangesCount += changesInChunk
+                    // Update UI on main thread
+                    DispatchQueue.main.async {
+                        // Only update if the process is still considered running (avoid updates after stop)
+                        guard self.isRunning else { return }
+                        self.dryRunDiscoveredChangesCount = localChangesCount
+                        self.progressMessage = "Calculating changes (found \(localChangesCount) potential changes)..."
+                        // print("Dry run found changes: \(localChangesCount)") // DEBUG
+                    }
+                }
+            }
+        }
+
+        // --- Error Parsing ---
+        errorPipe.fileHandleForReading.readabilityHandler = { fileHandle in
+             let data = fileHandle.availableData
+             if data.isEmpty { // EOF potentially
+                 return
+             }
+             errorQueue.async {
+                 if let errorChunk = String(data: data, encoding: .utf8) {
+                     accumulatedError += errorChunk
+                 }
+             }
+        }
+
+        // --- Process Termination ---
+        let semaphore = DispatchSemaphore(value: 0)
+        var finalResult: Result<DryRunInfo, BackupError>?
+
+        dryRunProcess.terminationHandler = { process in
+            // Ensure handlers are removed *before* processing final output
+            outputPipe.fileHandleForReading.readabilityHandler = nil
+            errorPipe.fileHandleForReading.readabilityHandler = nil
+
+            // Wait for any last async processing on queues to finish
+            outputQueue.sync { }
+            errorQueue.sync { }
+            
+            // Make sure file handles are drained completely after handlers removed
+            // This might not be strictly necessary but safer
+            if let remainingOutput = try? outputPipe.fileHandleForReading.readToEnd(), let outStr = String(data: remainingOutput, encoding: .utf8) {
+                accumulatedOutput += outStr
+            }
+             if let remainingError = try? errorPipe.fileHandleForReading.readToEnd(), let errStr = String(data: remainingError, encoding: .utf8) {
+                 accumulatedError += errStr
+             }
 
 
-            if dryRunProcess.terminationStatus == 0 {
-                // Parse stats
+            // --- Process Final Output (Now that process finished) ---
+            let exitCode = process.terminationStatus
+            print("Dry run finished with status: \(exitCode)") // DEBUG
+            // print("Final Dry run stdout:\n\(accumulatedOutput)") // DEBUG
+            // print("Final Dry run stderr:\n\(accumulatedError)") // DEBUG
+
+            if exitCode == 0 {
+                // Parse stats from the *accumulated* output
                 var totalSourceFilesCount = 0
                 var transferCount = 0
                 var deletionCount = 0
@@ -452,37 +527,37 @@ class BackupManager: ObservableObject {
                 var itemizedChangesFound = false
 
                 // Check for the presence of the stats block summary
-                 if let statsRange = outputString.range(of: "Number of files:") {
+                 if let statsRange = accumulatedOutput.range(of: "Number of files:") {
                      statsFound = true
                      // Parse Total Files
-                     let totalFilesSubstring = outputString[statsRange.upperBound...]
+                     let totalFilesSubstring = accumulatedOutput[statsRange.upperBound...]
                      if let totalFilesValue = totalFilesSubstring.split(separator: "\n").first?.trimmingCharacters(in: .whitespaces).split(separator: " ").first {
                          totalSourceFilesCount = Int(totalFilesValue) ?? 0
                      }
 
                      // Parse Files Transferred
-                     if let transferRange = outputString.range(of: "Number of files transferred:") {
-                         let transferSubstring = outputString[transferRange.upperBound...]
+                     if let transferRange = accumulatedOutput.range(of: "Number of files transferred:") {
+                         let transferSubstring = accumulatedOutput[transferRange.upperBound...]
                          if let transferValue = transferSubstring.split(separator: "\n").first?.trimmingCharacters(in: .whitespaces) {
                              transferCount = Int(transferValue) ?? 0
                          }
                      }
                      
                      // Parse Deletions - Look for specific line first
-                     if let deletionRange = outputString.range(of: "Number of deleted files:") { // Some rsync versions use this
-                         let deletionSubstring = outputString[deletionRange.upperBound...]
+                     if let deletionRange = accumulatedOutput.range(of: "Number of deleted files:") { // Some rsync versions use this
+                         let deletionSubstring = accumulatedOutput[deletionRange.upperBound...]
                          if let deletionValue = deletionSubstring.split(separator: "\n").first?.trimmingCharacters(in: .whitespaces) {
                              deletionCount = Int(deletionValue) ?? 0
                          }
-                     } else if let deletionRange = outputString.range(of: "Number of deletions:") { // Others use this
-                         let deletionSubstring = outputString[deletionRange.upperBound...]
+                     } else if let deletionRange = accumulatedOutput.range(of: "Number of deletions:") { // Others use this
+                         let deletionSubstring = accumulatedOutput[deletionRange.upperBound...]
                          if let deletionValue = deletionSubstring.split(separator: "\n").first?.trimmingCharacters(in: .whitespaces) {
                               deletionCount = Int(deletionValue) ?? 0
                          }
                      }
                      // If stats show 0 deletions, still check itemized list for "*deleting" as a fallback
-                     if deletionCount == 0 && outputString.contains("*deleting") {
-                         deletionCount = outputString.components(separatedBy: "\n").filter { $0.hasPrefix("*deleting") }.count
+                     if deletionCount == 0 && accumulatedOutput.contains("*deleting") {
+                         deletionCount = accumulatedOutput.components(separatedBy: "\n").filter { $0.hasPrefix("*deleting") }.count
                          print("Parsed deletion count from itemized list as fallback: \(deletionCount)")
                      }
 
@@ -490,7 +565,7 @@ class BackupManager: ObservableObject {
                  } else {
                      print("Warning: Dry run stats block not found in output.")
                      // Attempt to infer counts from itemized list if stats are missing
-                     let lines = outputString.split(whereSeparator: \.isNewline)
+                     let lines = accumulatedOutput.split(whereSeparator: \.isNewline)
                      totalSourceFilesCount = lines.filter { $0.hasPrefix(".") || $0.hasPrefix(">f") || $0.hasPrefix("cd") }.count // Approximate
                      transferCount = lines.filter { $0.hasPrefix(">f") }.count
                      deletionCount = lines.filter { $0.hasPrefix("*deleting") }.count
@@ -498,7 +573,7 @@ class BackupManager: ObservableObject {
                  }
                  
                  // Check if any itemized changes were listed (more reliable than just stats summary)
-                 itemizedChangesFound = outputString.split(whereSeparator: \.isNewline).contains { line in
+                 itemizedChangesFound = accumulatedOutput.split(whereSeparator: \.isNewline).contains { line in
                      line.hasPrefix(">f") || line.hasPrefix(".f") || line.hasPrefix("*deleting") || line.hasPrefix("cd") || line.hasPrefix(".d")
                  }
 
@@ -508,19 +583,42 @@ class BackupManager: ObservableObject {
                 print("Dry run parsed: NeedsSync=\(needsSync), Transfers=\(transferCount), Deletions=\(deletionCount), TotalSource=\(totalSourceFilesCount)")
 
                 // Return success with the parsed info
-                return .success(DryRunInfo(needsSync: needsSync,
+                finalResult = .success(DryRunInfo(needsSync: needsSync,
                                            transferCount: transferCount,
                                            deletionCount: deletionCount,
                                            totalSourceFilesCount: totalSourceFilesCount))
 
             } else {
                 // Dry run process failed
-                print("Dry run failed. Status: \(dryRunProcess.terminationStatus), Error: \(errorString)")
-                let message = errorString.isEmpty ? "Dry run exited with code \(dryRunProcess.terminationStatus)." : errorString.trimmingCharacters(in: .whitespacesAndNewlines)
-                return .failure(.dryRunFailed(message))
+                 // <<< MODIFIED: Use accumulatedError >>>
+                 print("Dry run failed. Status: \(exitCode), Error: \(accumulatedError)")
+                 let message = accumulatedError.isEmpty ? "Dry run exited with code \(exitCode)." : accumulatedError.trimmingCharacters(in: .whitespacesAndNewlines)
+                 // <<< MODIFIED: Assign result to variable >>>
+                 finalResult = .failure(.dryRunFailed(message))
             }
+            // Signal completion
+            semaphore.signal()
+        }
+
+
+        // --- Run the Process ---
+        do {
+            // Assign to instance property so stopBackup can find it
+            self.process = dryRunProcess
+            print("Starting dry run...") // DEBUG
+            try dryRunProcess.run()
+
+            // <<< MODIFIED: Wait for terminationHandler to signal completion >>>
+            semaphore.wait()
+
+            // <<< MODIFIED: Return the result captured in the termination handler >>>
+            return finalResult ?? .failure(.dryRunParseFailed) // Should always have a result
+
         } catch {
             print("Failed to launch dry run process: \(error)")
+            // Ensure handlers are cleaned up if launch fails
+            outputPipe.fileHandleForReading.readabilityHandler = nil
+            errorPipe.fileHandleForReading.readabilityHandler = nil
             return .failure(.dryRunLaunchFailed(error.localizedDescription))
         }
     }
@@ -566,18 +664,35 @@ class BackupManager: ObservableObject {
                       self.cleanupRunningProcess()
                       DispatchQueue.main.async { // Update UI on main thread
                           self.progressMessage = "Backup Stopped (Forced)."
-                          self.errorOccurred = true
-                          let stopError = BackupError.processTerminationFailed("Process did not terminate after stop request.")
-                          self.lastErrorMessage = stopError.localizedDescription
-                          self.showReport = true
-                          self.reportContent = "Backup was stopped manually (force)."
-                          // self.progressValue = 0.0 // Keep last value? Or reset? Resetting is fine.
-                           self.progressValue = 0.0
+                          // Only set error if it wasn't already stopped gracefully
+                          if self.isRunning {
+                              self.errorOccurred = true
+                              let stopError = BackupError.processTerminationFailed("Process did not terminate after stop request.")
+                              self.lastErrorMessage = stopError.localizedDescription
+                              self.showReport = true
+                              self.reportContent = "Backup was stopped manually (force)."
+                          }
+                          self.progressValue = 0.0
+                          self.dryRunDiscoveredChangesCount = 0 // Ensure reset
                       }
                   } else {
                        print("Process terminated after SIGINT.")
                        // Ensure cleanup happens
                        self.cleanupRunningProcess()
+                       // If it stopped gracefully after SIGINT but before this check,
+                       // update the UI to reflect it stopped, but maybe not as an error.
+                       DispatchQueue.main.async { [weak self] in
+                           guard let self = self else { return }
+                            // If the termination handler hasn't already updated the state
+                            // and it was originally running, provide a generic stop message.
+                            if self.progressMessage == "Stopping..." && self.isRunning {
+                                self.progressMessage = "Backup Stopped."
+                                self.showReport = true // Still show report
+                                self.reportContent = "Backup was stopped manually."
+                                self.progressValue = 0.0 // Reset progress
+                            }
+                             self.dryRunDiscoveredChangesCount = 0 // Ensure reset
+                       }
                   }
               }
          }
