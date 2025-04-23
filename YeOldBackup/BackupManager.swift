@@ -46,6 +46,8 @@ class BackupManager: ObservableObject {
     @Published var dryRunScannedFilesCount: Int = 0
     // State for dry run itemized changes progress indication
     @Published var dryRunDiscoveredChangesCount: Int = 0
+    // <<< ADDED: State for actual run scanning progress indication
+    @Published var actualRunScannedFilesCount: Int = 0
 
     // <<< ADDED: State for deletion confirmation
     @Published var requiresDeletionConfirmation: Bool = false
@@ -89,6 +91,7 @@ class BackupManager: ObservableObject {
             self.deletionStats = nil
             self.dryRunDiscoveredChangesCount = 0 // <<< ADDED: Reset dry run counter
             self.dryRunScannedFilesCount = 0 // <<< ADDED: Reset scan counter
+            self.actualRunScannedFilesCount = 0 // <<< ADDED: Reset actual scan counter
         }
 
         // Perform dry run asynchronously
@@ -228,12 +231,13 @@ class BackupManager: ObservableObject {
          DispatchQueue.main.async {
              // Update status message for the actual sync phase
              if self.totalFilesToTransfer > 0 {
-                 self.progressMessage = "Syncing \(self.totalFilesToTransfer) files..."
+                 self.progressMessage = "Preparing files..." // Initial message before scanning/syncing
              } else {
                   // This case might happen if only deletions were needed and they were below threshold
                  self.progressMessage = "Performing sync operations..."
              }
              self.filesProcessedCount = 0 // Ensure reset before run
+             self.actualRunScannedFilesCount = 0 // <<< ADDED: Ensure reset before run
              self.progressValue = 0.0
              self.currentFileName = ""
              // isRunning should already be true
@@ -246,7 +250,7 @@ class BackupManager: ObservableObject {
               "-a",
               "--delete",
               "-i", // Itemize changes for parsing file counts
-              "-v", // Verbose output for potential deletion details if needed later
+              "-vv", // <<< MODIFIED: Use double verbose for scanning feedback
               "--exclude", ".Spotlight-V100/",
               "--exclude", ".fseventsd/",
               "--exclude", ".Trashes",
@@ -277,9 +281,16 @@ class BackupManager: ObservableObject {
                  var processedInChunk = 0
                  var latestFileNameInChunk: String? = nil
                  var reportChunk = "" // Accumulate for report
+                 var scannedInChunk = 0 // <<< ADDED: Counter for actual run scan
 
                  for line in lines {
                      let lineStr = String(line) // Convert Substring to String
+
+                     // <<< ADDED: Count scanned files from -vv output >>>
+                     if lineStr.contains("hiding file") || lineStr.contains("receiving file list") {
+                         scannedInChunk += 1
+                     }
+
                      // Simple check for itemized file transfer start: ">f"
                      if lineStr.hasPrefix(">f") {
                          processedInChunk += 1
@@ -306,6 +317,11 @@ class BackupManager: ObservableObject {
                          self.reportContent += reportChunk
                     }
 
+                    // Update scanned count
+                    if scannedInChunk > 0 {
+                        self.actualRunScannedFilesCount += scannedInChunk
+                    }
+
                     if processedInChunk > 0 {
                         self.filesProcessedCount += processedInChunk
                         let displayCount = min(self.filesProcessedCount, self.totalFilesToTransfer)
@@ -321,6 +337,11 @@ class BackupManager: ObservableObject {
                              self.progressMessage = "Syncing \(self.currentFileName)... (\(displayCount)/\(self.totalFilesToTransfer))"
                         } else {
                              self.progressMessage = "Syncing \(self.currentFileName)..." // Case with only deletions
+                        }
+                        if scannedInChunk > 0 && self.filesProcessedCount == 0 {
+                             // <<< ADDED: Update message for scanning phase >>>
+                             // Only show scanning progress if no transfers have started yet
+                             self.progressMessage = "Preparing files (\(self.actualRunScannedFilesCount) processed)..."
                         }
                         // print("Processed: \(self.filesProcessedCount), Total: \(self.totalFilesToTransfer), Progress: \(self.progressValue)")
                     }
@@ -383,6 +404,7 @@ class BackupManager: ObservableObject {
                            // Reset discovery count on failure display
                            self.dryRunDiscoveredChangesCount = 0
                            self.dryRunScannedFilesCount = 0 // <<< ADDED: Reset scan counter
+                           self.actualRunScannedFilesCount = 0 // <<< ADDED: Reset actual scan counter
                            // Prepend summary to report content
                            self.reportContent = "Backup finished with errors (Code: \(exitCode)).\nErrors:\n\(self.lastErrorMessage)\n---\nDetails:\n" + self.reportContent
                            print("rsync failed. Status: \(exitCode), Error Accum: \(self.lastErrorMessage)")
@@ -705,6 +727,7 @@ class BackupManager: ObservableObject {
                           self.progressValue = 0.0
                           self.dryRunDiscoveredChangesCount = 0 // Ensure reset
                           self.dryRunScannedFilesCount = 0 // <<< ADDED: Ensure reset
+                          self.actualRunScannedFilesCount = 0 // <<< ADDED: Ensure reset
                       }
                   } else {
                        print("Process terminated after SIGINT.")
@@ -724,6 +747,7 @@ class BackupManager: ObservableObject {
                             }
                              self.dryRunDiscoveredChangesCount = 0 // Ensure reset
                              self.dryRunScannedFilesCount = 0 // <<< ADDED: Ensure reset
+                             self.actualRunScannedFilesCount = 0 // <<< ADDED: Ensure reset
                        }
                   }
               }
