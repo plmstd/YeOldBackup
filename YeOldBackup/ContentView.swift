@@ -116,97 +116,12 @@ struct ContentView: View {
                 Text("Backups")
                     .font(.headline)
                 
-                // Implement using SwiftUI Table
-                Table(history, selection: $selectedHistoryEntryID) {
-                    TableColumn("Source") { entry in
-                        // Provide content to allow tooltips if needed
-                        Text(entry.sourceName).help(entry.sourcePath)
-                    }
-                    .width(min: 100, ideal: 150)
-                    
-                    TableColumn("To") { _ in
-                        Image(systemName: "arrow.right")
-                    }
-                    .width(25)
-                    
-                    TableColumn("Target") { entry in
-                        // Provide content to allow tooltips if needed
-                        Text(entry.targetName).help(entry.targetPath)
-                    }
-                    .width(min: 100, ideal: 150)
-                    
-                    TableColumn("Last Success") { entry in 
-                        if let successDate = entry.lastSuccessDate {
-                            Text(successDate, formatter: dateFormatter)
-                                .foregroundColor(.secondary)
-                        } else {
-                            Text("Never")
-                                .foregroundColor(.secondary)
-                        }
-                    }
-                    .width(min: 100, ideal: 120)
-                    
-                    TableColumn("Status") { entry in
-                        HStack {
-                            switch entry.status {
-                            case .processing:
-                                ProgressView()
-                                    .controlSize(.small)
-                                Text("Processing")
-                                    .foregroundColor(.secondary)
-                            case .success:
-                                Image(systemName: "checkmark.circle.fill")
-                                    .foregroundColor(.green)
-                                Text("Success")
-                                    .foregroundColor(.secondary)
-                            case .error:
-                                Image(systemName: "xmark.circle.fill")
-                                    .foregroundColor(.red)
-                                Text("Error")
-                                    .foregroundColor(.secondary)
-                            }
-                        }
-                    }
-                    .width(min: 100, ideal: 120)
-                }
-                // .tableStyle(.inset) // Use default style for now, feels more native
-                .frame(minHeight: 100, maxHeight: 200) // Keep size constraints
-                .disabled(backupManager.isRunning || !hasFullDiskAccess)
-                .onChange(of: selectedHistoryEntryID) { oldID, newID in
-                    // Handle selection change - load the selected entry
-                    guard let id = newID, id != oldID else { // Ensure there's a change and a new selection
-                        // Handle deselection if needed, e.g., clear main paths?
-                        // For now, just prevent processing if no new valid ID.
-                        // print("Selection cleared or unchanged.")
-                        return
-                    }
-                    
-                    if let selectedEntry = history.first(where: { $0.id == id }) {
-                        print("Table selection changed to: \(selectedEntry.id)")
-                        selectHistoryEntry(selectedEntry) // Call existing function to load it
-                    } else {
-                        print("Warning: Selected ID \(id) not found in history.")
-                    }
-                }
-                // Add context menu for the selected row(s)
-                .contextMenu(forSelectionType: BackupHistoryEntry.ID.self) { selectedIDs in
-                    // Ensure there's a selection to act upon
-                    if !selectedIDs.isEmpty {
-                        Button("Remove from List", role: .destructive) {
-                            for id in selectedIDs {
-                                if let entryToDelete = history.first(where: { $0.id == id }) {
-                                    deleteHistoryEntry(entryToDelete: entryToDelete)
-                                }
-                            }
-                        }
-                    }
-                    // Add other potential actions here if needed
-                }
+                backupHistoryTable
 
                 Spacer() // Pushes controls to top and bottom
 
                 // Report Section
-                if backupManager.showReport {
+                /* if backupManager.showReport {
                     VStack(alignment: .leading, spacing: 5) {
                         HStack {
                             Text("Sync Report")
@@ -240,37 +155,10 @@ struct ContentView: View {
                     .padding()
                     .background(.regularMaterial)
                     .clipShape(RoundedRectangle(cornerRadius: 5)) // Optional
-                }
+                } */
 
                 // Backup Controls and Status (Now in a VStack)
-                HStack { // <<< Original HStack for button/progress/percentage
-                    if backupManager.isRunning {
-                        Button("Stop Sync") {
-                            backupManager.stopBackup()
-                        }
-                        .buttonStyle(.borderedProminent) // Make stop button prominent
-                        .tint(.red)
-                    } else {
-                        Button("Sync Now") {
-                            startBackup()
-                        }
-                        .disabled(sourcePath.isEmpty || targetPath.isEmpty || backupManager.isRunning || !hasFullDiskAccess)
-                        .keyboardShortcut(.defaultAction) // Allow hitting Enter to backup
-                    }
-
-                    // Determinate ProgressView bound to the BackupManager's progress
-                    ProgressView(value: backupManager.progressValue)
-                        .padding(.leading, 5)
-                        // Show the progress bar only when running
-                        .opacity(backupManager.isRunning ? 1 : 0)
-
-                    // <<< ADDED: Percentage Text
-                    if backupManager.isRunning && backupManager.totalFilesToTransfer > 0 {
-                        Text(String(format: "%.0f%%", backupManager.progressValue * 100))
-                            .font(.caption)
-                            .padding(.leading, 5)
-                    }
-                }
+                backupControls
             }
             .padding()
 
@@ -354,6 +242,97 @@ struct ContentView: View {
             } else {
                 // Fallback message if stats aren't available for some reason
                 Text("This sync operation will delete a significant number of files from the target directory to make it match the source.\n\nPlease double-check that these source and target locations are correct.\n\nProceed with deletion?")
+            }
+        }
+    }
+
+    // MARK: - Extracted View Components
+
+    private var backupHistoryTable: some View {
+        Table(history, selection: $selectedHistoryEntryID) {
+            TableColumn("Source") { entry in
+                Text(entry.sourceName).help(entry.sourcePath)
+            }
+            .width(min: 100, ideal: 150)
+            
+            TableColumn("To") { _ in Image(systemName: "arrow.right") }
+            .width(25)
+            
+            TableColumn("Target") { entry in
+                Text(entry.targetName).help(entry.targetPath)
+            }
+            .width(min: 100, ideal: 150)
+            
+            TableColumn("Last Success") { entry in 
+                if let successDate = entry.lastSuccessDate {
+                    Text(successDate, formatter: dateFormatter)
+                        .foregroundColor(.secondary)
+                } else {
+                    Text("Never").foregroundColor(.secondary)
+                }
+            }
+            .width(min: 100, ideal: 120)
+            
+            TableColumn("Status") { entry in
+                HStack {
+                    switch entry.status {
+                    case .processing:
+                        ProgressView().controlSize(.small)
+                        Text("Processing").foregroundColor(.secondary)
+                    case .success:
+                        Image(systemName: "checkmark.circle.fill").foregroundColor(.green)
+                        Text("Success").foregroundColor(.secondary)
+                    case .error:
+                        Image(systemName: "xmark.circle.fill").foregroundColor(.red)
+                        Text("Error").foregroundColor(.secondary)
+                    }
+                }
+            }
+            .width(min: 100, ideal: 120)
+        }
+        .frame(minHeight: 100, maxHeight: 200)
+        .disabled(backupManager.isRunning || !hasFullDiskAccess)
+        .onChange(of: selectedHistoryEntryID) { oldID, newID in
+            guard let id = newID, id != oldID else { return }
+            if let selectedEntry = history.first(where: { $0.id == id }) {
+                print("Table selection changed to: \(selectedEntry.id)")
+                selectHistoryEntry(selectedEntry)
+            } else {
+                print("Warning: Selected ID \(id) not found in history.")
+            }
+        }
+        .contextMenu(forSelectionType: BackupHistoryEntry.ID.self) { selectedIDs in
+            if !selectedIDs.isEmpty {
+                Button("Remove from List", role: .destructive) {
+                    for id in selectedIDs {
+                        if let entryToDelete = history.first(where: { $0.id == id }) {
+                            deleteHistoryEntry(entryToDelete: entryToDelete)
+                        }
+                    }
+                }
+            }
+        }
+    }
+
+    private var backupControls: some View {
+        HStack {
+            if backupManager.isRunning {
+                Button("Stop Sync") { backupManager.stopBackup() }
+                .buttonStyle(.borderedProminent).tint(.red)
+            } else {
+                Button("Sync Now") { startBackup() }
+                .disabled(sourcePath.isEmpty || targetPath.isEmpty || backupManager.isRunning || !hasFullDiskAccess)
+                .keyboardShortcut(.defaultAction)
+            }
+
+            ProgressView(value: backupManager.progressValue)
+                .padding(.leading, 5)
+                .opacity(backupManager.isRunning ? 1 : 0)
+
+            if backupManager.isRunning && backupManager.totalFilesToTransfer > 0 {
+                Text(String(format: "%.0f%%", backupManager.progressValue * 100))
+                    .font(.caption)
+                    .padding(.leading, 5)
             }
         }
     }
