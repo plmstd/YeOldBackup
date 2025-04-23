@@ -121,7 +121,7 @@ struct ContentView: View {
                 Spacer() // Pushes controls to top and bottom
 
                 // Report Section
-                /* if backupManager.showReport {
+                if backupManager.showReport {
                     VStack(alignment: .leading, spacing: 5) {
                         HStack {
                             Text("Sync Report")
@@ -134,7 +134,7 @@ struct ContentView: View {
 
                         ViewThatFits {
                             // Try to fit this view first (non-scrollable)
-                            Text(backupManager.reportContent)
+                            Text(truncateLines(text: backupManager.reportContent))
                                 .font(.caption)
                                 .frame(maxWidth: .infinity, alignment: .leading)
                                 .multilineTextAlignment(.leading)
@@ -142,7 +142,7 @@ struct ContentView: View {
 
                             // If it doesn't fit, fall back to scroll view
                             ScrollView(.vertical) {
-                                Text(backupManager.reportContent)
+                                Text(truncateLines(text: backupManager.reportContent))
                                     .font(.caption)
                                     .frame(maxWidth: .infinity, alignment: .leading)
                                     .multilineTextAlignment(.leading)
@@ -155,7 +155,7 @@ struct ContentView: View {
                     .padding()
                     .background(.regularMaterial)
                     .clipShape(RoundedRectangle(cornerRadius: 5)) // Optional
-                } */
+                }
 
                 // Backup Controls and Status (Now in a VStack)
                 backupControls
@@ -992,6 +992,16 @@ struct ContentView: View {
     // Helper to shorten paths for display
     private func shortPath(_ path: String) -> String {
         return (path as NSString).abbreviatingWithTildeInPath
+    }
+
+    // Helper to truncate lines of text to a maximum number
+    private func truncateLines(text: String, maxLines: Int = 30) -> String {
+        let lines = text.split(separator: "\n", omittingEmptySubsequences: false)
+        if lines.count > maxLines {
+            let truncatedLines = lines.suffix(maxLines)
+            return "[Showing last \(maxLines) of \(lines.count) lines]\n" + truncatedLines.joined(separator: "\n")
+        }
+        return lines.joined(separator: "\n")
     }
 }
 

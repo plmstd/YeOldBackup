@@ -312,10 +312,14 @@ class BackupManager: ObservableObject {
 
                  // Update progress and report content on the main thread
                  DispatchQueue.main.async {
-                    // Append to the main report
-                    if !reportChunk.isEmpty {
-                         self.reportContent += reportChunk
-                    }
+                    // split chunk into lines
+                    let lines = reportChunk.split(separator: "\n", omittingEmptySubsequences: false)
+                    // append each line to the main report, that does not start with ".", ">", "cd", "hiding file", "receiving file list" and is not empty
+                    for line in lines {
+                        if !line.hasPrefix(".") && !line.hasPrefix(">") && !line.hasPrefix("cd") && !line.hasPrefix("hiding file") && !line.hasPrefix("receiving file list") && !line.isEmpty {
+                            self.reportContent += line + "\n"
+                        }
+                    }   
 
                     // Update scanned count
                     if scannedInChunk > 0 {
@@ -389,7 +393,7 @@ class BackupManager: ObservableObject {
                            self.progressMessage = "Backup Complete."
                            self.progressValue = 1.0
                            // Prepend summary to report content
-                           self.reportContent = "Finished sync successfully.\n---\n" + self.reportContent
+                           self.reportContent =  self.reportContent + "\n\n---\nFinished sync successfully."
                            print("rsync finished successfully.")
                        } else {
                            self.errorOccurred = true // Ensure flag is set
@@ -406,7 +410,7 @@ class BackupManager: ObservableObject {
                            self.dryRunScannedFilesCount = 0 // <<< ADDED: Reset scan counter
                            self.actualRunScannedFilesCount = 0 // <<< ADDED: Reset actual scan counter
                            // Prepend summary to report content
-                           self.reportContent = "Backup finished with errors (Code: \(exitCode)).\nErrors:\n\(self.lastErrorMessage)\n---\nDetails:\n" + self.reportContent
+                           self.reportContent = self.reportContent + "\n\n---\nBackup finished with errors (Code: \(exitCode)).\nErrors:\n\(self.lastErrorMessage)"
                            print("rsync failed. Status: \(exitCode), Error Accum: \(self.lastErrorMessage)")
                        }
                        // Clear dynamic parts of status
